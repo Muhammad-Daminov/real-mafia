@@ -36,4 +36,198 @@ model User {
 
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+
+  createdRooms Room[]       @relation("RoomCreator")
+  gamePlayers  GamePlayer[] @relation("GamePlayerUser")
+}
+// ---------------------------------------------------------------------------
+// Phase 2 — Room / Game aggregate (Master TZ §8, §9, §10, §11, §33)
+//
+// Schema only: no services, controllers or endpoints in this slice. Behaviour
+// that is still governed by an Open Decision is deliberately NOT encoded here.
+// ---------------------------------------------------------------------------
+
+/// §8.1 visibility: PRIVATE = code/link only, PUBLIC = listed in the room browser.
+enum RoomVisibility {
+  PRIVATE
+  PUBLIC
+}
+
+/// §8.5 derived room state.
+enum RoomStatus {
+  OPEN
+  IN_PROGRESS
+  CLOSED
+}
+
+/// §13.3 ruleset variants. Pacing only — never a balance variant.
+enum RulesetMode {
+  NORMAL
+  FAST
+}
+
+/// §9 game lifecycle. CANCELLED is reachable from any non-terminal status.
+enum GameStatus {
+  DRAFT
+  LOBBY
+  RUNNING
+  PAUSED
+  FINISHED
+  CANCELLED
+}
+
+/// §10.1 phase values, including the v6.0 `LAST_WORD` phase.
+enum GamePhaseName {
+  LOBBY
+  ROLE_REVEAL
+  NIGHT
+  NIGHT_RESOLUTION
+  MORNING
+  DISCUSSION
+  VOTING
+  VOTE_RESOLUTION
+  LAST_WORD
+  EXECUTION
+  WIN_CHECK
+  GAME_OVER
+}
+
+/// §11 life status (v5.0 §12), independent of connection status.
+enum LifeStatus {
+  WAITING
+  ALIVE
+  DEAD
+  LEFT
+}
+
+/// §11 connection status, independent of life status.
+enum ConnectionStatus {
+  CONNECTED
+  DISCONNECTED
+}
+
+/// Shareable container that replaces v5.0's TelegramGroup binding (§8).
+///
+/// Never deleted (§33.1); a closed room's `code` is released by the janitor
+/// after 24h via `codeReleasedAt`, which does not delete the row (§8.5).
+model Room {
+  id            String         @id @default(uuid(7)) @db.Uuid
+  code          String         @db.VarChar(6)
+  visibility    RoomVisibility @default(PRIVATE)
+  status        RoomStatus     @default(OPEN)
+  rulesetMode   RulesetMode    @default(NORMAL) @map("ruleset_mode")
+  /// §8.1: 4–24. The MVP client caps at 12, but that is a UI affordance, not a
+  /// server limit (§15.1), so the CHECK constraint spans the full engine range.
+  maxPlayers    Int            @map("max_players")
+
+  creatorUserId Int            @map("creator_user_id")
+  creator       User           @relation("RoomCreator", fields: [creatorUserId], references: [id])
+
+  /// §8.4: optional metadata for bot deep-link convenience only. No
+  /// authorization decision anywhere may read this column.
+  telegramGroupId String?      @map("telegram_group_id")
+
+  /// §8.3 active game pointer. The authoritative enforcement of "exactly one
+  /// active game per room" is the partial unique index on games(room_id).
+  activeGameId  String?        @unique @map("active_game_id") @db.Uuid
+  activeGame    Game?          @relation("RoomActiveGame", fields: [activeGameId], references: [id])
+
+  games         Game[]         @relation("RoomGames")
+
+  codeReleasedAt DateTime?     @map("code_released_at")
+  createdAt     DateTime       @default(now()) @map("created_at")
+
+  @@index([status, visibility])
+  @@map("rooms")
+}
+
+/// §9 game aggregate root. Locked with `SELECT ... FOR UPDATE` on this row —
+/// the sole correctness boundary for every gameplay command (§19, §6.3).
+model Game {
+  id            String        @id @default(uuid(7)) @db.Uuid
+
+  roomId        String        @map("room_id") @db.Uuid
+  room          Room          @relation("RoomGames", fields: [roomId], references: [id])
+  activeForRoom Room?         @relation("RoomActiveGame")
+
+  status        GameStatus    @default(LOBBY)
+  currentPhase  GamePhaseName @default(LOBBY) @map("current_phase")
+  round         Int           @default(0)
+
+  /// §18.4 refers to `games.version` as the gameplay aggregate's version
+  /// counter; chat explicitly does not advance it.
+  version       Int           @default(0)
+
+  /// §14.1/§14.3: frozen at StartGame, never recalculated mid-game. Nullable
+  /// until the game starts.
+  rulesVersion  String?       @map("rules_version")
+  configSnapshot Json?        @map("config_snapshot")
+
+  /// §15.1. Nullable so a Game row can be inserted before its creator's
+  /// GamePlayer row exists in the same transaction.
+  hostPlayerId  String?       @unique @map("host_player_id") @db.Uuid
+  host          GamePlayer?   @relation("GameHost", fields: [hostPlayerId], references: [id])
+
+  players       GamePlayer[]  @relation("GamePlayers")
+  phases        GamePhase[]
+
+  createdAt     DateTime      @default(now()) @map("created_at")
+  startedAt     DateTime?     @map("started_at")
+  finishedAt    DateTime?     @map("finished_at")
+
+  @@index([status])
+  @@map("games")
+}
+
+/// §11 player lifecycle. Membership, host authority and every gameplay
+/// permission resolve exclusively through this table (§8.4).
+model GamePlayer {
+  id               String           @id @default(uuid(7)) @db.Uuid
+
+  gameId           String           @map("game_id") @db.Uuid
+  game             Game             @relation("GamePlayers", fields: [gameId], references: [id])
+
+  userId           Int              @map("user_id")
+  user             User             @relation("GamePlayerUser", fields: [userId], references: [id])
+
+  lifeStatus       LifeStatus       @default(WAITING) @map("life_status")
+  connectionStatus ConnectionStatus @default(CONNECTED) @map("connection_status")
+
+  /// OD-014 (resolved 2026-09-25): display-only signal; does NOT gate StartGame.
+  isReady          Boolean          @default(false) @map("is_ready")
+
+  /// §18.5/§33.2: set by an audited SuperAdmin moderation action.
+  isChatMuted      Boolean          @default(false) @map("is_chat_muted")
+
+  /// OD-013 (resolved 2026-09-25): automatic host transfer picks the remaining
+  /// non-LEFT player with the earliest `joinedAt`.
+  joinedAt         DateTime         @default(now()) @map("joined_at")
+
+  hostOf           Game?            @relation("GameHost")
+
+  @@unique([gameId, userId])
+  @@index([gameId, lifeStatus])
+  @@map("game_players")
+}
+
+/// §19: `game_phases.ends_at` is the sole authority for phase deadlines.
+/// Included in this slice because §33.3's active-phase partial unique index
+/// cannot exist without it.
+model GamePhase {
+  id        String        @id @default(uuid(7)) @db.Uuid
+
+  gameId    String        @map("game_id") @db.Uuid
+  game      Game          @relation(fields: [gameId], references: [id])
+
+  phase     GamePhaseName
+  round     Int
+
+  startedAt DateTime      @default(now()) @map("started_at")
+  /// Null for non-timed phases (§10.1).
+  endsAt    DateTime?     @map("ends_at")
+  /// Null while this is the game's active phase — see the partial unique index.
+  endedAt   DateTime?     @map("ended_at")
+
+  @@index([gameId, round])
+  @@map("game_phases")
 }
