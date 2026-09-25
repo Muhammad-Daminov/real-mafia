@@ -1,0 +1,24 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id         Int      @id @default(autoincrement())
+  telegramId String   @unique
+  username   String?
+  firstName  String
+  lastName   String?
+  avatar     String?
+
+  gamesPlayed Int     @default(0)
+  gamesWon    Int     @default(0)
+  level       Int     @default(1)
+  xp          Int     @default(0)
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
