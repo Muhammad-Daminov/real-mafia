@@ -34,6 +34,7 @@ model User {
 
   createdRooms Room[]       @relation("RoomCreator")
   gamePlayers  GamePlayer[] @relation("GamePlayerUser")
+  launchTokens GameLaunchToken[] @relation("LaunchTokenConsumer")
 }
 // ---------------------------------------------------------------------------
 // Phase 2 — Room / Game aggregate (Master TZ §8, §9, §10, §11, §33)
@@ -128,6 +129,8 @@ model Room {
   activeGame    Game?          @relation("RoomActiveGame", fields: [activeGameId], references: [id])
 
   games         Game[]         @relation("RoomGames")
+
+  launchTokens  GameLaunchToken[]
 
   codeReleasedAt DateTime?     @map("code_released_at")
   createdAt     DateTime       @default(now()) @map("created_at")
@@ -225,4 +228,42 @@ model GamePhase {
 
   @@index([gameId, round])
   @@map("game_phases")
+}
+
+/// Launch token binding a Mini App session to where it was launched from
+/// (Master TZ §22.2, v5.0 §29.2).
+///
+/// The Mini App must never be able to assert "I belong to Room X" on its own.
+/// The bot mints one of these server-side and hands the opaque token to the
+/// client; the client presents it at `POST /auth/telegram`.
+///
+/// Rules, all from §22.2: opaque, <= 15 min TTL, single-use consumption
+/// recorded. Possessing a token is NEVER itself authorization to act — join
+/// still runs the full validation of §15.2.
+///
+/// Only the SHA-256 hash of the token is stored, never the token itself, so a
+/// database read cannot yield usable tokens (same discipline as the initData
+/// replay guard).
+model GameLaunchToken {
+  id               String    @id @default(uuid(7)) @db.Uuid
+
+  /// SHA-256 of the opaque token. Unique: one row per issued token.
+  tokenHash        String    @unique @map("token_hash")
+
+  /// §22.2: nullable — a token minted for the public room browser has no room
+  /// until the user picks one.
+  roomId           String?   @map("room_id") @db.Uuid
+  room             Room?     @relation(fields: [roomId], references: [id])
+
+  expiresAt        DateTime  @map("expires_at")
+
+  /// Single-use: null until consumed, set exactly once.
+  usedAt           DateTime? @map("used_at")
+  consumedByUserId String?   @map("consumed_by_user_id") @db.Uuid
+  consumedBy       User?     @relation("LaunchTokenConsumer", fields: [consumedByUserId], references: [id])
+
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  @@index([expiresAt])
+  @@map("game_launch_tokens")
 }

@@ -5,6 +5,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { TelegramReplayGuardService } from './telegram-replay-guard.service';
+import { LaunchTokenService } from './launch-token.service';
 import {
   AUTH_TELEGRAM_RATE_LIMIT,
   AUTH_TELEGRAM_RATE_LIMIT_TTL_MS,
@@ -28,6 +29,12 @@ import {
     ]),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, TelegramReplayGuardService],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    TelegramReplayGuardService,
+    LaunchTokenService,
+  ],
+  exports: [LaunchTokenService],
 })
 export class AuthModule {}

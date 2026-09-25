@@ -32,11 +32,11 @@ phase entirely.
 
 ## RESOLVED by product-owner addendum (2026-09-25)
 
-These seven were BLOCKING in MASTER_TZ.md §42.1 and were resolved by the product
-owner ahead of the Phase 2 Room/Game schema. This is an **addendum**, not a spec
-edit: MASTER_TZ.md §42.1 still lists them as OPEN/BLOCKING. Where the two disagree,
-these decisions are the later and therefore governing word — the Master TZ should
-be amended to match at the next revision.
+Seven of these were BLOCKING in MASTER_TZ.md §42.1 and were resolved by the product
+owner after v6.0 was issued; OD-035 is a new decision recorded the same day. This is an **addendum**, not a spec edit: MASTER_TZ.md
+§42.1 still lists them as OPEN/BLOCKING. Where the two disagree, these decisions are
+the later and therefore governing word — the Master TZ should be amended to match at
+the next revision.
 
 ### OD-013 — Host Transfer · RESOLVED
 Decision: if the host's GamePlayer becomes LEFT (left in lobby), or is
@@ -81,6 +81,19 @@ unconditionally in the GAME_FINISHED event and game_results.summary, per
 §16.3 (already normative, unaffected by this OD — this OD governs only
 mid-game visibility, which is: none).
 
+### OD-035 — Launch Token Error Codes · RESOLVED
+Decision: `consume()` rejects with distinct codes per failure mode —
+`LAUNCH_TOKEN_NOT_FOUND` (404), `LAUNCH_TOKEN_EXPIRED` (410),
+`LAUNCH_TOKEN_ALREADY_USED` (409), `LAUNCH_TOKEN_ROOM_MISMATCH` (409).
+Rationale: §22.2 specifies the launch-token protocol but §32's error table
+carries no token codes — they live in v5.0 §33.2, which v6.0 both supersedes
+(§1.3) and references (§32's "all v5.0 §33.2 codes carry forward"). Same
+carry-forward gap as the `POST /auth/telegram` rate limit. Distinct codes are
+chosen over one opaque code because the Mini App must distinguish "your link
+expired, get a fresh one" from a hard failure; tokens are opaque 256-bit
+randoms, so there is no practical oracle to exploit. These codes are an
+addition to §32 and should be folded into the Master TZ at the next revision.
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
 None. Every previously blocking decision is resolved (see the addendum above).
@@ -109,5 +122,5 @@ None. Every previously blocking decision is resolved (see the addendum above).
   2026-09-25 addendum resolved them.)
 - OD-031–OD-034 are new in v6.0 (MASTER_TZ.md §42.2/§42.1) and non-blocking, each with a
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
-- Total: 24 resolved (17 in v6.0 + 7 by the 2026-09-25 addendum), 0 open+blocking,
-  10 open+non-blocking (34 IDs, OD-001 through OD-034).
+- Total: 25 resolved (17 in v6.0 + 8 by the 2026-09-25 addendum), 0 open+blocking,
+  10 open+non-blocking (35 IDs, OD-001 through OD-035).
