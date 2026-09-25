@@ -136,10 +136,16 @@ describe('LaunchTokenService', () => {
     it('sets a TTL no longer than the 15 minute ceiling', async () => {
       const before = Date.now();
       const { expiresAt } = await service.issue({ roomId });
+      const after = Date.now();
 
-      const ttlMs = expiresAt.getTime() - before;
-      expect(ttlMs).toBeGreaterThan(0);
-      expect(ttlMs).toBeLessThanOrEqual(LAUNCH_TOKEN_TTL_SECONDS * 1000);
+      // expiresAt is computed inside issue() from its own Date.now() call,
+      // taken some time after `before` was captured — bracket with `after`
+      // too instead of comparing against a single pre-call timestamp, or
+      // any elapsed time between the two reads reads as TTL overrun.
+      expect(expiresAt.getTime()).toBeGreaterThan(before);
+      expect(expiresAt.getTime()).toBeLessThanOrEqual(
+        after + LAUNCH_TOKEN_TTL_SECONDS * 1000,
+      );
       expect(LAUNCH_TOKEN_TTL_SECONDS).toBeLessThanOrEqual(15 * 60);
     });
 
