@@ -30,17 +30,60 @@ phase entirely.
 | OD-027 | First-night kill | Allowed |
 | OD-030 | Localization scope | uz/ru/en, MUST |
 
+## RESOLVED by product-owner addendum (2026-09-25)
+
+These seven were BLOCKING in MASTER_TZ.md §42.1 and were resolved by the product
+owner ahead of the Phase 2 Room/Game schema. This is an **addendum**, not a spec
+edit: MASTER_TZ.md §42.1 still lists them as OPEN/BLOCKING. Where the two disagree,
+these decisions are the later and therefore governing word — the Master TZ should
+be amended to match at the next revision.
+
+### OD-013 — Host Transfer · RESOLVED
+Decision: if the host's GamePlayer becomes LEFT (left in lobby), or is
+DISCONNECTED for longer than 120 seconds at any point (lobby or running),
+host_player_id transfers automatically to the remaining non-LEFT player with
+the earliest joined_at. No claim command, no manual transfer in V1.
+
+### OD-014 — Lobby Readiness Rule · RESOLVED
+Decision: StartGame requires only playerCount >= minPlayers for the row in
+§13.1. is_ready is a display-only signal and does not gate StartGame. Host
+may start regardless of how many players are marked ready.
+
+### OD-015 — Disconnect / Abandonment Policy · RESOLVED
+Decision: a DISCONNECTED alive player remains ALIVE and stays in the game.
+They simply submit no action/vote for phases they miss (validated as absence,
+not as a special state). No automatic LEFT transition, no automatic action,
+no forced removal, in V1. Reconnect resumes normal participation with no
+special-casing needed.
+
+### OD-018 — Vote Tie Policy · RESOLVED
+Decision: on a tie for highest vote count, no execution occurs this round;
+resolution proceeds directly to WIN_CHECK then NIGHT (round+1). No revote,
+no random tiebreak.
+
+### OD-020 — Vote Visibility and Vote Change · RESOLVED
+Decision: (a) individual votes are PUBLIC in real time — a VOTE_CAST event
+(PUBLIC visibility) fires on every cast/change. (b) A player may change their
+vote any number of times before the VOTING deadline; changing a vote is an
+UPDATE of their existing game_votes row (same unique constraint,
+game_id+phase_id+voter_player_id), not a new insert, and re-emits VOTE_CAST.
+
+### OD-023 — Host Powers and Cancellation Authority · RESOLVED
+Decision: host may CancelGame only while status = LOBBY. Host has no power to
+cancel a RUNNING or PAUSED game (operator/SuperAdmin only, per §41.3/§28.3).
+Host has no discussion-skip power in V1. No kick-player power in V1.
+
+### OD-024 — Role Reveal on Death / Post-Game · RESOLVED
+Decision: a player's role is NOT revealed publicly at the moment of death
+during NIGHT_RESOLUTION or EXECUTION (PLAYER_DIED/PLAYER_EXECUTED events carry
+no role field). At GAME_OVER, every participant's role and team is revealed
+unconditionally in the GAME_FINISHED event and game_results.summary, per
+§16.3 (already normative, unaffected by this OD — this OD governs only
+mid-game visibility, which is: none).
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
-| ID | Title | Blocks |
-|---|---|---|
-| OD-013 | Host Transfer | Phase 2: Room/Game lifecycle |
-| OD-014 | Lobby Readiness Rule | Phase 4: Lobby |
-| OD-015 | Disconnect / Abandonment Policy | Phase 6: Roles/actions |
-| OD-018 | Vote Tie Policy | Phase: Engine (vote resolution) |
-| OD-020 | Vote Visibility and Vote Change | Phase: Engine (voting) |
-| OD-023 | Host Powers and Cancellation Authority | Phase: Engine / Admin |
-| OD-024 | Role Reveal on Death / Post-Game | Phase: Engine (death, game over) |
+None. Every previously blocking decision is resolved (see the addendum above).
 
 ## OPEN and non-blocking — has a stated default, may proceed using it but must be logged as a known gap
 
@@ -59,10 +102,12 @@ phase entirely.
 
 ## Notes
 
-- OD-013–OD-015, OD-018, OD-020, OD-023, OD-024, OD-021, OD-026, OD-028, OD-029
-  retain their full v5.0 question/options/consequences text (MASTER_TZ.md §42.3,
-  referencing v5.0 §48.3) — not reproduced here; consult that source text before
-  proposing a resolution.
+- OD-021, OD-026, OD-028, OD-029 retain
+  their full v5.0 question/options/consequences text (MASTER_TZ.md §42.3, referencing v5.0 §48.3) —
+  not reproduced here; consult that source text before proposing a resolution.
+  (OD-013, OD-014, OD-018, OD-020, OD-023, OD-024 were in this list until the
+  2026-09-25 addendum resolved them.)
 - OD-031–OD-034 are new in v6.0 (MASTER_TZ.md §42.2/§42.1) and non-blocking, each with a
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
-- Total: 17 resolved, 7 open+blocking, 10 open+non-blocking (34 IDs, OD-001 through OD-034).
+- Total: 24 resolved (17 in v6.0 + 7 by the 2026-09-25 addendum), 0 open+blocking,
+  10 open+non-blocking (34 IDs, OD-001 through OD-034).
