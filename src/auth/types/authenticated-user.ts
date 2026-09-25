@@ -5,7 +5,7 @@
  * (or from PostgreSQL via it), never from a client-supplied id — Master TZ §29.
  */
 export interface AuthenticatedUser {
-  /** `User.id`, serialized as a string in the JWT `sub` claim. */
+  /** `User.id` — a UUID since the Phase 2 uuid conversion. */
   userId: string;
   telegramId: string;
 }

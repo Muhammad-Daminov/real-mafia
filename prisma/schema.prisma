@@ -22,7 +22,7 @@ model TelegramInitDataReplay {
 }
 
 model User {
-  id         Int      @id @default(autoincrement())
+  id         String   @id @default(uuid(7)) @db.Uuid
   telegramId String   @unique
   username   String?
   firstName  String
@@ -115,7 +115,7 @@ model Room {
   /// server limit (§15.1), so the CHECK constraint spans the full engine range.
   maxPlayers    Int            @map("max_players")
 
-  creatorUserId Int            @map("creator_user_id")
+  creatorUserId String         @map("creator_user_id") @db.Uuid
   creator       User           @relation("RoomCreator", fields: [creatorUserId], references: [id])
 
   /// §8.4: optional metadata for bot deep-link convenience only. No
@@ -182,7 +182,7 @@ model GamePlayer {
   gameId           String           @map("game_id") @db.Uuid
   game             Game             @relation("GamePlayers", fields: [gameId], references: [id])
 
-  userId           Int              @map("user_id")
+  userId           String           @map("user_id") @db.Uuid
   user             User             @relation("GamePlayerUser", fields: [userId], references: [id])
 
   lifeStatus       LifeStatus       @default(WAITING) @map("life_status")
