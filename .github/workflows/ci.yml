@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mafia_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mafia_test
+      JWT_SECRET: ci-test-secret
+      BOT_TOKEN: ci-test-bot-token
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm exec prisma generate
+
+      # Migrations only — never `prisma db push` (Master TZ §41.1).
+      - name: Apply migrations
+        run: pnpm exec prisma migrate deploy
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit -p tsconfig.json
+
+      # Master TZ §37.5 / invariant I-33: release-gate item (§45).
+      # This MUST stay a hard failure — it is the automated backstop for the
+      # "no pay-to-win, ever" product commitment.
+      - name: Module boundary check (I-33)
+        run: pnpm run lint:boundaries
+
+      - name: Tests
+        run: pnpm test
