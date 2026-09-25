@@ -2,13 +2,15 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtService } from '@nestjs/jwt';
+import { TelegramReplayGuardService } from './telegram-replay-guard.service';
 import { INIT_DATA_FRESHNESS_WINDOW_SECONDS } from './auth.constants';
 
 @Injectable()
 export class AuthService {
   constructor(
-    private readonly prisma: PrismaService,
-    private readonly jwtService: JwtService,
+  private readonly prisma: PrismaService,
+  private readonly jwtService: JwtService,
+  private readonly replayGuard: TelegramReplayGuardService,
   ) {}
 
   async loginWithTelegram(initData: string) {
@@ -70,6 +72,20 @@ export class AuthService {
       throw new BadRequestException('Telegram initData noto‘g‘ri');
     }
 
+    // Replay guard runs only after the HMAC proves the payload is genuinely
+    // Telegram's, so unauthenticated garbage can never fill the store.
+    const expiresAt = new Date(
+      (authTimestamp + INIT_DATA_FRESHNESS_WINDOW_SECONDS) * 1000,
+    );
+
+    const isFirstUse = await this.replayGuard.claim(receivedHash, expiresAt);
+
+    if (!isFirstUse) {
+      throw new BadRequestException(
+        'Telegram initData allaqachon ishlatilgan',
+      );
+    }
+
     const userData = params.get('user');
 
     if (!userData) {
@@ -115,14 +131,14 @@ export class AuthService {
       },
     });
 
-    const accessToken = await this.jwtService.signAsync({
-      sub: user.id,
-      telegramId: user.telegramId,
-    });
+  const accessToken = await this.jwtService.signAsync({
+  sub: user.id,
+  telegramId: user.telegramId,
+});
 
-    return {
-      accessToken,
-      user,
-    };
+return {
+  accessToken,
+  user,
+};
   }
 }

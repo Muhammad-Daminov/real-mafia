@@ -1,20 +1,33 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  NotFoundException,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { UsersService } from './users.service';
-import { CreateUserDto } from './dto/create-user.dto';
 import { JwtGuard } from '../auth/guards/jwt.guard';
+import type { RequestWithUser } from '../auth/types/authenticated-user';
 
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
-  @Get()
+  /**
+   * Returns only the authenticated caller's own profile.
+   *
+   * The id is taken from the verified JWT (`request.user`), never from a route
+   * or query parameter, so there is no IDOR surface here — Master TZ §29.
+   */
+  @Get('me')
   @UseGuards(JwtGuard)
-  async findAll() {
-    return this.usersService.findAll();
-  }
+  async findMe(@Req() req: RequestWithUser) {
+    const user = await this.usersService.findById(req.user.userId);
 
-  @Post()
-  async create(@Body() dto: CreateUserDto) {
-    return this.usersService.create(dto);
+    if (!user) {
+      throw new NotFoundException('Foydalanuvchi topilmadi');
+    }
+
+    return user;
   }
 }

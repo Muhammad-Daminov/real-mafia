@@ -6,6 +6,21 @@ datasource db {
   provider = "postgresql"
 }
 
+/// Replay guard for Telegram `initData` (Master TZ §22.2, v5.0 §29.3).
+///
+/// Only the initData `hash` is stored — never the raw initData payload, which
+/// the spec forbids persisting. Rows are self-expiring via `expiresAt`, which is
+/// set to the end of the same freshness window the HMAC check enforces.
+///
+/// This is the PostgreSQL fallback path; Redis is the primary store (§34).
+model TelegramInitDataReplay {
+  hash      String   @id
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
 model User {
   id         Int      @id @default(autoincrement())
   telegramId String   @unique
