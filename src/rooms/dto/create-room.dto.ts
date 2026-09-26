@@ -1,5 +1,13 @@
-import { IsEnum, IsInt, IsNotEmpty, IsString, Max, Min } from 'class-validator';
-import { RulesetMode } from '@prisma/client';
+import {
+  IsEnum,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
+import { RoomVisibility, RulesetMode } from '@prisma/client';
 
 /**
  * Master TZ §15.1 / §30.1. `clientRequestId` is required per §19's
@@ -22,4 +30,12 @@ export class CreateRoomDto {
 
   @IsEnum(RulesetMode)
   rulesetMode!: RulesetMode;
+
+  /**
+   * §8.1/§8.2, OD-039: optional, defaults to PRIVATE — mirrors the column's
+   * own `@default(PRIVATE)` rather than diverging from it.
+   */
+  @IsOptional()
+  @IsEnum(RoomVisibility)
+  visibility: RoomVisibility = RoomVisibility.PRIVATE;
 }

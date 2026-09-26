@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { randomInt } from 'crypto';
-import { LifeStatus, Prisma, RulesetMode } from '@prisma/client';
+import { LifeStatus, Prisma, RoomVisibility, RulesetMode } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CommandRequestService } from '../common/command-requests/command-request.service';
 import { RoomErrorCode, RoomException } from './rooms.errors';
@@ -24,6 +24,9 @@ export interface CreateRoomInput {
   clientRequestId: string;
   maxPlayers: number;
   rulesetMode: RulesetMode;
+  /** OD-039: optional, defaults to PRIVATE — the DTO already applies this
+   * default for the real endpoint; this mirrors it for direct callers. */
+  visibility?: RoomVisibility;
 }
 
 export interface CreatedRoom {
@@ -32,6 +35,7 @@ export interface CreatedRoom {
   gameId: string;
   maxPlayers: number;
   rulesetMode: RulesetMode;
+  visibility: RoomVisibility;
 }
 
 export interface RoomSummary {
@@ -216,6 +220,7 @@ export class RoomsService {
         gameId: game.id,
         maxPlayers: room.maxPlayers,
         rulesetMode: room.rulesetMode,
+        visibility: room.visibility,
       };
 
       await this.commandRequests.record(tx, key, {
@@ -820,6 +825,7 @@ export class RoomsService {
             code,
             maxPlayers: input.maxPlayers,
             rulesetMode: input.rulesetMode,
+            visibility: input.visibility ?? RoomVisibility.PRIVATE,
             creatorUserId: input.userId,
           },
         });

@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
-import { RulesetMode } from '@prisma/client';
+import { RoomVisibility, RulesetMode } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CommandRequestService } from '../common/command-requests/command-request.service';
 import { RoomsService } from './rooms.service';
@@ -34,13 +34,18 @@ describe('RoomsService (integration)', () => {
 
   const createValidRoom = async (
     userId: string,
-    overrides: Partial<{ maxPlayers: number; rulesetMode: RulesetMode }> = {},
+    overrides: Partial<{
+      maxPlayers: number;
+      rulesetMode: RulesetMode;
+      visibility: RoomVisibility;
+    }> = {},
   ) => {
     const room = await service.createRoom({
       userId,
       clientRequestId: randomUUID(),
       maxPlayers: overrides.maxPlayers ?? 4,
       rulesetMode: overrides.rulesetMode ?? RulesetMode.NORMAL,
+      visibility: overrides.visibility ?? RoomVisibility.PRIVATE,
     });
     createdRoomIds.push(room.roomId);
     return room;
@@ -99,6 +104,40 @@ describe('RoomsService (integration)', () => {
         where: { id: room.roomId },
       });
       expect(persistedRoom.activeGameId).toBe(room.gameId);
+    });
+
+    it('defaults to PRIVATE visibility when omitted (OD-039)', async () => {
+      const host = await makeUser();
+
+      const room = await service.createRoom({
+        userId: host.id,
+        clientRequestId: randomUUID(),
+        maxPlayers: 4,
+        rulesetMode: RulesetMode.NORMAL,
+      });
+      createdRoomIds.push(room.roomId);
+
+      expect(room.visibility).toBe('PRIVATE');
+
+      const persisted = await prisma.room.findUniqueOrThrow({
+        where: { id: room.roomId },
+      });
+      expect(persisted.visibility).toBe('PRIVATE');
+    });
+
+    it('creates a PUBLIC room when visibility is explicitly requested', async () => {
+      const host = await makeUser();
+
+      const room = await createValidRoom(host.id, {
+        visibility: RoomVisibility.PUBLIC,
+      });
+
+      expect(room.visibility).toBe('PUBLIC');
+
+      const persisted = await prisma.room.findUniqueOrThrow({
+        where: { id: room.roomId },
+      });
+      expect(persisted.visibility).toBe('PUBLIC');
     });
 
     it('replays the stored response for a repeated clientRequestId instead of creating a second room', async () => {
@@ -428,13 +467,38 @@ describe('RoomsService (integration)', () => {
     ) => {
       const room = await createValidRoom(userId, {
         maxPlayers: overrides.maxPlayers ?? 4,
-      });
-      await prisma.room.update({
-        where: { id: room.roomId },
-        data: { visibility: 'PUBLIC' },
+        visibility: RoomVisibility.PUBLIC,
       });
       return room;
     };
+
+    it('is reachable end-to-end through the real create endpoint: a PUBLIC room created via createRoom appears, a PRIVATE one does not', async () => {
+      const host = await makeUser();
+
+      const publicRoom = await service.createRoom({
+        userId: host.id,
+        clientRequestId: randomUUID(),
+        maxPlayers: 4,
+        rulesetMode: RulesetMode.NORMAL,
+        visibility: RoomVisibility.PUBLIC,
+      });
+      createdRoomIds.push(publicRoom.roomId);
+
+      const privateRoom = await service.createRoom({
+        userId: host.id,
+        clientRequestId: randomUUID(),
+        maxPlayers: 4,
+        rulesetMode: RulesetMode.NORMAL,
+        visibility: RoomVisibility.PRIVATE,
+      });
+      createdRoomIds.push(privateRoom.roomId);
+
+      const page = await service.listPublicRooms({ page: 1, limit: 20 });
+      const roomIds = page.rooms.map((r) => r.roomId);
+
+      expect(roomIds).toContain(publicRoom.roomId);
+      expect(roomIds).not.toContain(privateRoom.roomId);
+    });
 
     it('returns an empty page when there are no open public rooms', async () => {
       const page = await service.listPublicRooms({ page: 1, limit: 20 });

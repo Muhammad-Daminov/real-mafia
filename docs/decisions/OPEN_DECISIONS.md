@@ -237,6 +237,25 @@ This decision (pagination shape, defaults, field list, ordering) is an
 addition to §8.2/§30.1 and should be folded into the Master TZ at the next
 revision, same as OD-035/036/037.
 
+### OD-039 — Room-Creation `visibility` Field: Name, Optionality, Default · RESOLVED
+Context: §8.1 fixes the allowed values (`visibility ∈ {PRIVATE, PUBLIC}` —
+confirmed no third state anywhere in the schema/spec) and §8.2 says the
+create flow "User picks size, mode (Normal/Fast), visibility," but neither
+section states the request field's name, whether it's required, or what
+happens if the caller omits it. OD-038 flagged this as a known gap (that
+slice found `GET /rooms/public` was unreachable through the real create
+endpoint) without deciding the contract; this decision closes it.
+
+Decision: the field is named `visibility` (matches the `RoomVisibility`
+column/enum name directly — no reason to rename it in the DTO), is
+**optional**, and **defaults to `PRIVATE`** when omitted. Rationale: this
+mirrors the column's own `@default(PRIVATE)` in `prisma/schema.prisma`, so
+the DTO default and the DB default agree rather than silently diverging.
+`PRIVATE` is also the safer default on its own merits — a room a user
+creates without explicitly choosing "public" should not become discoverable
+by strangers by accident. This is an addition to §8.2/§30.1 and should be
+folded into the Master TZ at the next revision, same as OD-035–038.
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
 None. Every previously blocking decision is resolved (see the addendum above).
@@ -265,6 +284,6 @@ None. Every previously blocking decision is resolved (see the addendum above).
   2026-09-25 addendum resolved them.)
 - OD-031–OD-034 are new in v6.0 (MASTER_TZ.md §42.2/§42.1) and non-blocking, each with a
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
-- Total: 28 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum + OD-037/OD-038
-  recorded 2026-09-26), 0 open+blocking, 10 open+non-blocking (38 IDs, OD-001
-  through OD-038).
+- Total: 29 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
+  OD-037/OD-038/OD-039 recorded 2026-09-26), 0 open+blocking, 10
+  open+non-blocking (39 IDs, OD-001 through OD-039).

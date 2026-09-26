@@ -41,4 +41,33 @@ describe('CreateRoomDto', () => {
     const errors = await check({ ...valid, rulesetMode: 'CHAOS' });
     expect(errors.some((e) => e.property === 'rulesetMode')).toBe(true);
   });
+
+  it('defaults visibility to PRIVATE when omitted (OD-039)', async () => {
+    const errors = await check(valid);
+    expect(errors).toHaveLength(0);
+
+    const instance = plainToInstance(CreateRoomDto, valid);
+    expect(instance.visibility).toBe('PRIVATE');
+  });
+
+  it('accepts an explicit PUBLIC visibility', async () => {
+    const errors = await check({ ...valid, visibility: 'PUBLIC' });
+    expect(errors).toHaveLength(0);
+
+    const instance = plainToInstance(CreateRoomDto, {
+      ...valid,
+      visibility: 'PUBLIC',
+    });
+    expect(instance.visibility).toBe('PUBLIC');
+  });
+
+  it('accepts an explicit PRIVATE visibility', async () => {
+    const errors = await check({ ...valid, visibility: 'PRIVATE' });
+    expect(errors).toHaveLength(0);
+  });
+
+  it('rejects a visibility outside PRIVATE|PUBLIC', async () => {
+    const errors = await check({ ...valid, visibility: 'UNLISTED' });
+    expect(errors.some((e) => e.property === 'visibility')).toBe(true);
+  });
 });

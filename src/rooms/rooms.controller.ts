@@ -31,6 +31,7 @@ export class RoomsController {
       clientRequestId: dto.clientRequestId,
       maxPlayers: dto.maxPlayers,
       rulesetMode: dto.rulesetMode,
+      visibility: dto.visibility,
     });
   }
 
