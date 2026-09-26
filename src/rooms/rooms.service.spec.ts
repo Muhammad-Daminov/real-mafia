@@ -147,6 +147,72 @@ describe('RoomsService (integration)', () => {
       expect(persisted.visibility).toBe('PUBLIC');
     });
 
+    describe('room code collision retry', () => {
+      // Seam: spy on the existing private randomCode() method rather than
+      // adding any constructor injection or test-only branch to production
+      // code — production randomness (crypto.randomInt) is untouched: the
+      // spy only controls which of the 5 attempts collide, the actual
+      // uniqueness collision below is a real DB constraint violation
+      // (rooms_code_unique_while_open), not a simulated one.
+      afterEach(() => {
+        jest.restoreAllMocks();
+      });
+
+      it('retries past a collision and succeeds within the 5-attempt budget', async () => {
+        const host = await makeUser();
+        const collidingCode = 'COLIDE';
+
+        const seed = await prisma.room.create({
+          data: { code: collidingCode, maxPlayers: 4, creatorUserId: host.id },
+        });
+        createdRoomIds.push(seed.id);
+
+        const spy = jest
+          .spyOn(service as unknown as { randomCode: () => string }, 'randomCode')
+          .mockReturnValueOnce(collidingCode) // attempt 1: collides with the seed
+          .mockReturnValueOnce(collidingCode) // attempt 2: collides again
+          .mockReturnValueOnce('FREEC1'); // attempt 3: succeeds
+
+        const room = await createValidRoom(host.id);
+
+        expect(spy).toHaveBeenCalledTimes(3);
+        expect(room.code).toBe('FREEC1');
+      });
+
+      it('fails after exhausting all 5 attempts rather than retrying forever', async () => {
+        const host = await makeUser();
+        const collidingCode = 'STUCK1';
+
+        const seed = await prisma.room.create({
+          data: { code: collidingCode, maxPlayers: 4, creatorUserId: host.id },
+        });
+        createdRoomIds.push(seed.id);
+
+        const spy = jest
+          .spyOn(service as unknown as { randomCode: () => string }, 'randomCode')
+          .mockReturnValue(collidingCode); // every attempt collides
+
+        await expect(
+          service.createRoom({
+            userId: host.id,
+            clientRequestId: randomUUID(),
+            maxPlayers: 4,
+            rulesetMode: RulesetMode.NORMAL,
+            visibility: RoomVisibility.PRIVATE,
+          }),
+        ).rejects.toMatchObject({ code: 'P2002' });
+
+        // Exactly 5 attempts — the documented budget, not an infinite loop.
+        expect(spy).toHaveBeenCalledTimes(5);
+
+        // No orphaned room was created by the failed attempts.
+        const roomCount = await prisma.room.count({
+          where: { creatorUserId: host.id, code: { not: collidingCode } },
+        });
+        expect(roomCount).toBe(0);
+      });
+    });
+
     it('replays the stored response for a repeated clientRequestId instead of creating a second room', async () => {
       const host = await makeUser();
       const clientRequestId = randomUUID();

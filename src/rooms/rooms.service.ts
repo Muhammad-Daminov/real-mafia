@@ -1019,6 +1019,13 @@ export class RoomsService {
    * The code space collision check is "the guarded INSERT decides it" — same
    * discipline as the launch-token/initData-replay guards elsewhere in this
    * codebase — rather than a pre-check-then-insert race.
+   *
+   * Each attempt runs inside its own `SAVEPOINT`: a P2002 aborts the whole
+   * enclosing Postgres transaction, not just the failed statement — without a
+   * savepoint to roll back to, a second `tx.room.create()` after a collision
+   * would fail with "current transaction is aborted" instead of getting a
+   * clean retry (found by the retry-path test this comment sits next to;
+   * the loop had never been exercised against a real collision before that).
    */
   private async createRoomRowWithUniqueCode(
     tx: Prisma.TransactionClient,
@@ -1027,8 +1034,10 @@ export class RoomsService {
     for (let attempt = 0; attempt < CODE_GENERATION_MAX_ATTEMPTS; attempt += 1) {
       const code = this.randomCode();
 
+      await tx.$executeRaw`SAVEPOINT room_code_attempt`;
+
       try {
-        return await tx.room.create({
+        const room = await tx.room.create({
           data: {
             code,
             maxPlayers: input.maxPlayers,
@@ -1037,7 +1046,13 @@ export class RoomsService {
             creatorUserId: input.userId,
           },
         });
+
+        await tx.$executeRaw`RELEASE SAVEPOINT room_code_attempt`;
+
+        return room;
       } catch (error) {
+        await tx.$executeRaw`ROLLBACK TO SAVEPOINT room_code_attempt`;
+
         const isLastAttempt = attempt === CODE_GENERATION_MAX_ATTEMPTS - 1;
 
         if (!this.isUniqueViolation(error) || isLastAttempt) {
