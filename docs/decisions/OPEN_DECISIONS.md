@@ -425,6 +425,32 @@ reads their own role. Five sub-decisions, resolved together:
 This is an addition to §10.2/§12.1/§30 and should be folded into the Master TZ
 at the next revision, same as OD-035–040.
 
+### OD-042 — Round Boundary Definition · RESOLVED
+Context: §9/§10 and the `games_round_non_negative`/`game_phases_round_non_negative`
+CHECK constraints establish that `round` "starts at 0 (pre-game) and only ever
+advances," and §10.2's phase diagram has exactly one cycle-repeat edge
+(`WIN_CHECK --> NIGHT : no winner`), but nothing in §9-§14 or §19 states the
+precise moment the counter increments — that specific boundary point is not
+textual in MASTER_TZ.md.
+
+Decision (product owner, 2026-09-26): round increments when a `NIGHT` phase
+begins. `ROLE_REVEAL` is round 0 (pre-game); the first `NIGHT` starts round 1;
+every phase between that `NIGHT` and the next one (its `NIGHT_RESOLUTION`,
+`MORNING`, `DISCUSSION`, `VOTING`, `VOTE_RESOLUTION`, optional `LAST_WORD`/
+`EXECUTION`, `WIN_CHECK`) shares round 1's number; the next `NIGHT` (reached
+via `WIN_CHECK`'s "no winner" edge) starts round 2, and so on. `GAME_OVER`
+carries whatever round was active when the winner was determined — reaching
+it never bumps the counter again.
+
+The rejected alternative (bump the counter at `WIN_CHECK` itself, before the
+loop back to `NIGHT`) is functionally near-identical — `WIN_CHECK --> NIGHT`
+is the only repeat edge — but would make `WIN_CHECK`'s own `game_phases` row
+carry the *next* round's number instead of the round it's actually concluding,
+which reads worse in the audit history (`game_phases`/future `game_events`).
+
+This is an addition to §9/§10.2/§19 and should be folded into the Master TZ at
+the next revision, same as OD-035–041.
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
 None. Every previously blocking decision is resolved (see the addendum above).
@@ -453,6 +479,6 @@ None. Every previously blocking decision is resolved (see the addendum above).
   2026-09-25 addendum resolved them.)
 - OD-031–OD-034 are new in v6.0 (MASTER_TZ.md §42.2/§42.1) and non-blocking, each with a
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
-- Total: 31 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
-  OD-037/OD-038/OD-039/OD-040/OD-041 recorded 2026-09-26), 0 open+blocking, 10
-  open+non-blocking (41 IDs, OD-001 through OD-041).
+- Total: 32 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
+  OD-037/OD-038/OD-039/OD-040/OD-041/OD-042 recorded 2026-09-26), 0 open+blocking,
+  10 open+non-blocking (42 IDs, OD-001 through OD-042).

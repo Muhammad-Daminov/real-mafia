@@ -60,6 +60,9 @@ describe('RoomsService (integration)', () => {
       await prisma.gameRoleAssignment.deleteMany({
         where: { game: { roomId: { in: createdRoomIds } } },
       });
+      await prisma.gamePhase.deleteMany({
+        where: { game: { roomId: { in: createdRoomIds } } },
+      });
       await prisma.gamePlayer.deleteMany({
         where: { game: { roomId: { in: createdRoomIds } } },
       });

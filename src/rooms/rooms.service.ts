@@ -949,6 +949,7 @@ export class RoomsService {
         gameId,
         activePlayerIds: activePlayers.map((p) => p.id),
         roleDistribution,
+        phaseDurationsSec,
       });
 
       // startedAt/rulesVersion/configSnapshot aren't in §10.3's restricted

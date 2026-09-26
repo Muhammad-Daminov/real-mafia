@@ -45,6 +45,7 @@ describe('GameLifecycleService (integration)', () => {
   afterEach(async () => {
     if (createdGameId) {
       await prisma.gameRoleAssignment.deleteMany({ where: { gameId: createdGameId } });
+      await prisma.gamePhase.deleteMany({ where: { gameId: createdGameId } });
       await prisma.gamePlayer.deleteMany({ where: { gameId: createdGameId } });
       await prisma.game.deleteMany({ where: { id: createdGameId } });
     }
@@ -83,12 +84,40 @@ describe('GameLifecycleService (integration)', () => {
 
     const activePlayerIds = players.map((p) => p.id);
 
+    const phaseDurationsSec = {
+      ROLE_REVEAL: 15,
+      NIGHT: 45,
+      MORNING: 15,
+      LAST_WORD: 20,
+      DISCUSSION: 90,
+      VOTING: 41,
+    };
+
+    const beforeCall = Date.now();
     const result = await prisma.$transaction((tx) =>
-      service.startGame(tx, { gameId: game.id, activePlayerIds, roleDistribution: distribution }),
+      service.startGame(tx, {
+        gameId: game.id,
+        activePlayerIds,
+        roleDistribution: distribution,
+        phaseDurationsSec,
+      }),
     );
 
     expect(result.status).toBe('RUNNING');
     expect(result.currentPhase).toBe('ROLE_REVEAL');
+
+    // §19: games.status/current_phase can never be observed RUNNING without a
+    // matching active game_phases row — the transition engine has nothing to
+    // act on otherwise.
+    const activePhase = await prisma.gamePhase.findFirstOrThrow({
+      where: { gameId: game.id, endedAt: null },
+    });
+    expect(activePhase.phase).toBe('ROLE_REVEAL');
+    expect(activePhase.round).toBe(0); // OD-042: ROLE_REVEAL is pre-game, round 0.
+    expect(activePhase.endsAt).not.toBeNull();
+    const endsAtMs = activePhase.endsAt!.getTime();
+    expect(endsAtMs).toBeGreaterThanOrEqual(beforeCall + phaseDurationsSec.ROLE_REVEAL * 1000);
+    expect(endsAtMs).toBeLessThan(beforeCall + (phaseDurationsSec.ROLE_REVEAL + 5) * 1000);
 
     const persistedGame = await prisma.game.findUniqueOrThrow({ where: { id: game.id } });
     expect(persistedGame.status).toBe('RUNNING');
