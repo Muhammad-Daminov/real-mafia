@@ -1,8 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import { GamePhaseName, GameStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { SchedulerService } from '../common/scheduling/scheduler.service';
 import { GameLifecycleService, PhaseDurationsSec } from './game-lifecycle.service';
 import { computeNextPhase, isTransientPhase } from './phase-graph';
+import { PHASE_ADVANCE_TASK_KIND, PhaseAdvanceTaskPayload } from './scheduled-task-kinds';
 
 export type AdvancePhaseReason = 'GAME_NOT_FOUND' | 'GAME_NOT_RUNNING' | 'NOT_DUE';
 
@@ -42,21 +44,31 @@ const TIMED_PHASE_KEY: Partial<Record<GamePhaseName, keyof PhaseDurationsSec>> =
  * same division of labor as StartGame (this service decides *what* happens
  * next and holds the lock; GameLifecycleService performs the write).
  *
- * Known gap: nothing in this codebase yet calls `advancePhase` on a
- * schedule. §19/OD-008 name a `scheduled_tasks` + `FOR UPDATE SKIP LOCKED`
- * polling worker as the timer mechanism, but no such worker (and no
- * `scheduled_tasks` table) exists in this codebase yet — building that
- * generic background-job infrastructure is its own slice, shared with the
- * outbox dispatcher's near-identical needs (§19/§25), and is out of scope
- * here. This service is written to be safe to call from that worker once it
- * exists, or from a manual/action-driven trigger, without any redesign.
+ * §19/OD-008/OD-043: `advancePhase` is registered as the handler for the
+ * `PHASE_ADVANCE_CHECK` task kind on `SchedulerService` (`common/scheduling`,
+ * domain-agnostic shared infra) — this is the dependency edge that makes
+ * `advancePhase` actually get called on schedule: `GameLifecycleService`
+ * enqueues a `PHASE_ADVANCE_CHECK` task for a game's next deadline every time
+ * it writes a new `ends_at` (in `startGame` and `transitionPhase`), and
+ * `SchedulerService`'s poll loop claims and dispatches it back here once due.
+ * `game-engine` imports `common/scheduling` and registers itself with it;
+ * `common/scheduling` never imports `game-engine` — the same one-directional
+ * shape I-33 already requires for `game-engine <-> economy`.
  */
 @Injectable()
-export class PhaseTransitionService {
+export class PhaseTransitionService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly gameLifecycle: GameLifecycleService,
+    private readonly scheduler: SchedulerService,
   ) {}
+
+  onModuleInit(): void {
+    this.scheduler.registerHandler(PHASE_ADVANCE_TASK_KIND, async (payload) => {
+      const { gameId } = payload as unknown as PhaseAdvanceTaskPayload;
+      await this.advancePhase(gameId);
+    });
+  }
 
   async advancePhase(gameId: string): Promise<AdvancePhaseResult> {
     return this.prisma.$transaction(async (tx) => {

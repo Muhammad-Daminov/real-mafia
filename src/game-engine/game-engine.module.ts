@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { SchedulingModule } from '../common/scheduling/scheduling.module';
 import { RoleAssignmentService } from './role-assignment.service';
 import { GameLifecycleService } from './game-lifecycle.service';
 import { PhaseTransitionService } from './phase-transition.service';
@@ -24,6 +25,7 @@ import { PhaseTransitionService } from './phase-transition.service';
  * referral-granted entity may ever affect a game's outcome.
  */
 @Module({
+  imports: [SchedulingModule],
   providers: [RoleAssignmentService, GameLifecycleService, PhaseTransitionService],
   exports: [RoleAssignmentService, GameLifecycleService, PhaseTransitionService],
 })

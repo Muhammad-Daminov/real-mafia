@@ -2,9 +2,11 @@ import 'dotenv/config';
 import { randomUUID } from 'crypto';
 import { GamePhaseName, GameStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { SchedulerService } from '../common/scheduling/scheduler.service';
 import { RoleAssignmentService } from './role-assignment.service';
 import { GameLifecycleService, PhaseDurationsSec } from './game-lifecycle.service';
 import { PhaseTransitionService } from './phase-transition.service';
+import { phaseAdvanceDedupeKey } from './scheduled-task-kinds';
 
 /**
  * §10.2/§10.3/§19: PhaseTransitionService is the phase state machine's
@@ -14,8 +16,9 @@ import { PhaseTransitionService } from './phase-transition.service';
  */
 describe('PhaseTransitionService (integration)', () => {
   const prisma = new PrismaService();
-  const gameLifecycle = new GameLifecycleService(new RoleAssignmentService());
-  const service = new PhaseTransitionService(prisma, gameLifecycle);
+  const scheduler = new SchedulerService(prisma);
+  const gameLifecycle = new GameLifecycleService(new RoleAssignmentService(), scheduler);
+  const service = new PhaseTransitionService(prisma, gameLifecycle, scheduler);
 
   const TEST_TELEGRAM_PREFIX = 'phase-transition-test-';
   let createdUserIds: string[] = [];
@@ -86,6 +89,9 @@ describe('PhaseTransitionService (integration)', () => {
 
   afterEach(async () => {
     if (createdGameIds.length) {
+      await prisma.scheduledTask.deleteMany({
+        where: { dedupeKey: { in: createdGameIds.map(phaseAdvanceDedupeKey) } },
+      });
       await prisma.gameRoleAssignment.deleteMany({ where: { gameId: { in: createdGameIds } } });
       await prisma.gamePhase.deleteMany({ where: { gameId: { in: createdGameIds } } });
       await prisma.gamePlayer.deleteMany({ where: { gameId: { in: createdGameIds } } });
@@ -150,6 +156,14 @@ describe('PhaseTransitionService (integration)', () => {
 
     const activeCount = await prisma.gamePhase.count({ where: { gameId: game.id, endedAt: null } });
     expect(activeCount).toBe(1); // §33.3 partial unique index: at most one active phase per game
+
+    // §19/OD-043: the transition is self-perpetuating — landing on MORNING
+    // (a stable, timed phase) must enqueue the next check.
+    const nextTask = await prisma.scheduledTask.findFirstOrThrow({
+      where: { dedupeKey: phaseAdvanceDedupeKey(game.id) },
+    });
+    expect(nextTask.status).toBe('PENDING');
+    expect(nextTask.runAt.getTime()).toBe(phases[2].endsAt!.getTime());
   });
 
   it('increments round exactly when WIN_CHECK routes back into NIGHT (OD-042)', async () => {

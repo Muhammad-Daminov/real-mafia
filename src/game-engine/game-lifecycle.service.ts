@@ -1,7 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { GamePhaseName, GameStatus, LifeStatus, Prisma } from '@prisma/client';
+import { SchedulerService } from '../common/scheduling/scheduler.service';
 import { RoleAssignmentService } from './role-assignment.service';
 import { RoleDistribution } from './roles';
+import {
+  PHASE_ADVANCE_TASK_KIND,
+  PhaseAdvanceTaskPayload,
+  phaseAdvanceDedupeKey,
+} from './scheduled-task-kinds';
 
 /**
  * §14.2's per-phase durations in seconds, computed once at StartGame and
@@ -62,7 +68,10 @@ export interface TransitionPhaseInput {
  */
 @Injectable()
 export class GameLifecycleService {
-  constructor(private readonly roleAssignment: RoleAssignmentService) {}
+  constructor(
+    private readonly roleAssignment: RoleAssignmentService,
+    private readonly scheduler: SchedulerService,
+  ) {}
 
   async startGame(
     tx: Prisma.TransactionClient,
@@ -92,15 +101,18 @@ export class GameLifecycleService {
     // on. Round 0 per OD-042 (ROLE_REVEAL is pre-game; round 1 starts at the
     // first NIGHT).
     const now = new Date();
+    const endsAt = new Date(now.getTime() + input.phaseDurationsSec.ROLE_REVEAL * 1000);
     await tx.gamePhase.create({
       data: {
         gameId: input.gameId,
         phase: currentPhase,
         round: 0,
         startedAt: now,
-        endsAt: new Date(now.getTime() + input.phaseDurationsSec.ROLE_REVEAL * 1000),
+        endsAt,
       },
     });
+
+    await this.enqueuePhaseAdvanceCheck(tx, input.gameId, endsAt);
 
     return { status, currentPhase };
   }
@@ -143,6 +155,33 @@ export class GameLifecycleService {
           ? { status: GameStatus.FINISHED, finishedAt: now }
           : {}),
       },
+    });
+
+    if (input.endsAt !== null) {
+      await this.enqueuePhaseAdvanceCheck(tx, input.gameId, input.endsAt);
+    }
+  }
+
+  /**
+   * §19: keeps the transition engine self-perpetuating — a per-game "check
+   * this game's next deadline" task rather than one process sweeping every
+   * RUNNING game. Nothing in §19/OD-008 mandates a global sweep instead;
+   * per-game tasks are the natural reading of "`game_phases.ends_at` as sole
+   * authority" (each row already names its own deadline) and keep the
+   * scheduler's claim scan bounded by *due* work instead of *all live games*.
+   * `dedupeKey` makes a repeated call for the same game a no-op rather than
+   * piling up duplicate pending tasks (OD-043).
+   */
+  private async enqueuePhaseAdvanceCheck(
+    tx: Prisma.TransactionClient,
+    gameId: string,
+    endsAt: Date,
+  ): Promise<void> {
+    await this.scheduler.enqueue(tx, {
+      kind: PHASE_ADVANCE_TASK_KIND,
+      payload: { gameId } satisfies PhaseAdvanceTaskPayload,
+      runAt: endsAt,
+      dedupeKey: phaseAdvanceDedupeKey(gameId),
     });
   }
 }

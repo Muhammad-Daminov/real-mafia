@@ -451,6 +451,54 @@ which reads worse in the audit history (`game_phases`/future `game_events`).
 This is an addition to §9/§10.2/§19 and should be folded into the Master TZ at
 the next revision, same as OD-035–041.
 
+### OD-043 — Scheduled-Task Worker Operational Parameters · RESOLVED
+Context: §19 (v5.0 §21, carried forward "unchanged in mechanism") names the
+timer mechanism precisely — "`scheduled_tasks` table, `FOR UPDATE SKIP
+LOCKED` polling, lease-based claiming, `game_phases.ends_at` as sole
+authority" — but the v5.0 source text that would spell out concrete
+operational numbers is not reproduced anywhere in this repository (only the
+mechanism-level bullet survives into MASTER_TZ.md v6.0). Four numeric/policy
+parameters are needed to actually run a worker and have no textual source:
+poll interval, lease duration, retry/backoff policy, and max attempts before
+a task is abandoned.
+
+Decision (product owner, 2026-09-26), four sub-points:
+
+1. **Poll interval: 1 second.** Fine enough relative to the shortest timed
+   phase (10s `ROLE_REVEAL`/`MORNING` in Fast mode, §14.2) that a phase's
+   actual advance lags its `ends_at` by ~1s on average; cheap enough that
+   idle `SELECT ... FOR UPDATE SKIP LOCKED` polling against an empty due-set
+   is not a meaningful DB load concern at this scale.
+2. **Lease duration: 30 seconds.** `advancePhase` (§10.2/§10.3) is a single
+   row-locked, sub-second transaction, so 30s is generous headroom for a GC
+   pause or transient DB slowness while still recovering an abandoned task
+   well within any phase's duration if the worker that claimed it crashes
+   before calling `complete`/`fail`.
+3. **Retry/backoff policy: bounded exponential backoff with jitter** — base
+   5s, doubling, capped at 5 minutes, ±20% jitter. This is the exact policy
+   §19/§25 already mandates for the (not-yet-built) outbox dispatcher;
+   applying it here too means the one shared `scheduled_tasks` table has a
+   single retry shape regardless of which future consumer (phase transitions
+   now, the outbox dispatcher later) enqueued a given row, rather than two
+   divergent policies on one table.
+4. **Max attempts: 10.** At the backoff policy above, 10 attempts spans a few
+   minutes up to ~5 minutes per retry at the cap — enough to ride out a
+   transient DB blip or a rolling deploy without a permanently-broken task
+   polling forever; a task exceeding this moves to a terminal `FAILED` status
+   (this table's equivalent of the outbox's future DLQ) for manual/admin
+   inspection rather than being deleted or retried indefinitely.
+
+The `scheduled_tasks` table's own column shape (kind discriminator, JSON
+payload, `run_at`, status enum, `lease_owner`/`lease_expires_at`,
+`attempt_count`) is not itself a product/gameplay decision — no spec text
+names these columns, the same way `game_phases`'s own column shape (§19's
+prior slice) was engineering judgment applied to a named mechanism, not a
+literal transcription. It is documented in the migration and
+`scheduling.module.ts`'s docstring rather than repeated here.
+
+This is an addition to §19/§21 (v5.0) and should be folded into the Master TZ
+at the next revision, same as OD-035–042.
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
 None. Every previously blocking decision is resolved (see the addendum above).
@@ -479,6 +527,6 @@ None. Every previously blocking decision is resolved (see the addendum above).
   2026-09-25 addendum resolved them.)
 - OD-031–OD-034 are new in v6.0 (MASTER_TZ.md §42.2/§42.1) and non-blocking, each with a
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
-- Total: 32 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
-  OD-037/OD-038/OD-039/OD-040/OD-041/OD-042 recorded 2026-09-26), 0 open+blocking,
-  10 open+non-blocking (42 IDs, OD-001 through OD-042).
+- Total: 33 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
+  OD-037/OD-038/OD-039/OD-040/OD-041/OD-042/OD-043 recorded 2026-09-26), 0
+  open+blocking, 10 open+non-blocking (43 IDs, OD-001 through OD-043).

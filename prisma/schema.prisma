@@ -347,3 +347,62 @@ model CommandRequest {
   @@unique([userId, endpoint, clientRequestId])
   @@map("command_requests")
 }
+
+/// §19/§21 (v5.0)/OD-008/OD-043: generic scheduled-task infrastructure shared
+/// by every future timer-driven consumer — today the phase-transition engine
+/// (`game-engine`), later the outbox dispatcher (§19/§25). This table has no
+/// knowledge of what a task means: `kind` and `payload` are opaque to it, so
+/// nothing game-specific belongs in this model or in `SchedulerService`
+/// (`src/common/scheduling/`) — see that module's docstring for the I-33
+/// boundary reasoning.
+enum ScheduledTaskStatus {
+  PENDING
+  LEASED
+  DONE
+  FAILED
+}
+
+model ScheduledTask {
+  id       String              @id @default(uuid(7)) @db.Uuid
+
+  /// Opaque discriminator a registered handler is looked up by
+  /// (e.g. `"PHASE_ADVANCE_CHECK"`). Never interpreted by this module.
+  kind     String
+
+  /// Opaque handler input. Never interpreted by this module.
+  payload  Json
+
+  /// §19: the task is due once `now >= run_at`. On `fail`, this is pushed
+  /// forward by OD-043's backoff policy for a retry.
+  runAt    DateTime            @map("run_at")
+
+  status   ScheduledTaskStatus @default(PENDING)
+
+  /// OD-043: lease-based claiming. Both null while PENDING; set together by
+  /// `claim`, cleared together by `complete`/a retry-triggering `fail`.
+  leaseOwner     String?   @map("lease_owner")
+  leaseExpiresAt DateTime? @map("lease_expires_at")
+
+  attemptCount Int @default(0) @map("attempt_count")
+  /// OD-043 default (10) — a caller MAY override per task if it has a reason to.
+  maxAttempts  Int @default(10) @map("max_attempts")
+
+  lastError String? @map("last_error")
+
+  /// Caller-supplied opaque key for idempotent enqueue (e.g.
+  /// `"phase-advance:<gameId>"`). Unique only while the task is still
+  /// PENDING/LEASED (partial index, §33.3-style raw-SQL construct) — a DONE
+  /// or FAILED task releases the key, exactly like `rooms.code`'s
+  /// while-open uniqueness scope.
+  dedupeKey String? @map("dedupe_key")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Backs `claim`'s `FOR UPDATE SKIP LOCKED` scan (due PENDING tasks and
+  /// expired-lease LEASED tasks are both selected by status + a timestamp
+  /// column).
+  @@index([status, runAt])
+  @@index([status, leaseExpiresAt])
+  @@map("scheduled_tasks")
+}

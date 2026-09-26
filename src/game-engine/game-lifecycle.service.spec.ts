@@ -1,9 +1,11 @@
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { SchedulerService } from '../common/scheduling/scheduler.service';
 import { RoleAssignmentService } from './role-assignment.service';
 import { GameLifecycleService } from './game-lifecycle.service';
 import { RoleDistribution } from './roles';
+import { phaseAdvanceDedupeKey } from './scheduled-task-kinds';
 
 /**
  * §10.3 authority fix: games.status/current_phase and game_players.life_status
@@ -15,7 +17,8 @@ import { RoleDistribution } from './roles';
 describe('GameLifecycleService (integration)', () => {
   const prisma = new PrismaService();
   const roleAssignment = new RoleAssignmentService();
-  const service = new GameLifecycleService(roleAssignment);
+  const scheduler = new SchedulerService(prisma);
+  const service = new GameLifecycleService(roleAssignment, scheduler);
 
   const TEST_TELEGRAM_PREFIX = 'game-lifecycle-test-';
   let createdUserIds: string[] = [];
@@ -44,6 +47,9 @@ describe('GameLifecycleService (integration)', () => {
 
   afterEach(async () => {
     if (createdGameId) {
+      await prisma.scheduledTask.deleteMany({
+        where: { dedupeKey: phaseAdvanceDedupeKey(createdGameId) },
+      });
       await prisma.gameRoleAssignment.deleteMany({ where: { gameId: createdGameId } });
       await prisma.gamePhase.deleteMany({ where: { gameId: createdGameId } });
       await prisma.gamePlayer.deleteMany({ where: { gameId: createdGameId } });
@@ -136,5 +142,15 @@ describe('GameLifecycleService (integration)', () => {
     });
     expect(assignments).toHaveLength(4);
     expect(new Set(assignments.map((a) => a.playerId)).size).toBe(4);
+
+    // §19/OD-043: startGame must also schedule the follow-up check so the
+    // transition engine is self-perpetuating from the first phase onward.
+    const scheduledTask = await prisma.scheduledTask.findFirstOrThrow({
+      where: { dedupeKey: phaseAdvanceDedupeKey(game.id) },
+    });
+    expect(scheduledTask.kind).toBe('PHASE_ADVANCE_CHECK');
+    expect(scheduledTask.status).toBe('PENDING');
+    expect((scheduledTask.payload as { gameId: string }).gameId).toBe(game.id);
+    expect(scheduledTask.runAt.getTime()).toBe(endsAtMs);
   });
 });

@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { RoomVisibility, RulesetMode } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CommandRequestService } from '../common/command-requests/command-request.service';
+import { SchedulerService } from '../common/scheduling/scheduler.service';
 import { RoleAssignmentService } from '../game-engine/role-assignment.service';
 import { GameLifecycleService } from '../game-engine/game-lifecycle.service';
 import { RoomsService } from './rooms.service';
@@ -18,7 +19,8 @@ describe('RoomsService (integration)', () => {
   const prisma = new PrismaService();
   const commandRequests = new CommandRequestService();
   const roleAssignment = new RoleAssignmentService();
-  const gameLifecycle = new GameLifecycleService(roleAssignment);
+  const scheduler = new SchedulerService(prisma);
+  const gameLifecycle = new GameLifecycleService(roleAssignment, scheduler);
   const service = new RoomsService(prisma, commandRequests, gameLifecycle);
 
   const TEST_TELEGRAM_PREFIX = 'rooms-test-';
@@ -57,6 +59,15 @@ describe('RoomsService (integration)', () => {
 
   afterEach(async () => {
     if (createdRoomIds.length) {
+      const games = await prisma.game.findMany({
+        where: { roomId: { in: createdRoomIds } },
+        select: { id: true },
+      });
+      if (games.length) {
+        await prisma.scheduledTask.deleteMany({
+          where: { dedupeKey: { in: games.map((g) => `phase-advance:${g.id}`) } },
+        });
+      }
       await prisma.gameRoleAssignment.deleteMany({
         where: { game: { roomId: { in: createdRoomIds } } },
       });
