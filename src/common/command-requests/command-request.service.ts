@@ -69,4 +69,42 @@ export class CommandRequestService {
       },
     });
   }
+
+  /**
+   * A `record` call inside a `$transaction` callback that hits the unique
+   * constraint on (userId, endpoint, clientRequestId) aborts the whole
+   * Postgres transaction — every other write the callback made (the Room,
+   * Game, GamePlayer rows) rolls back with it, and the transaction *and its
+   * connection* are done; no further queries can run against it. So a
+   * collision can't be resolved from inside the callback (a `SELECT` there
+   * would just fail again with "current transaction is aborted"). Instead,
+   * the caller wraps the whole `$transaction(...)` call: on rejection, this
+   * re-reads the winner's stored response outside that dead transaction,
+   * using a fresh query. Both the racing caller (loser) and this recovery
+   * path observe the winner's byte-identical response — never a raw Prisma
+   * error at the controller.
+   *
+   * Returns null if the error wasn't actually this collision (or the
+   * replayed row can't be found for some other reason) — the caller should
+   * then rethrow the original error unchanged.
+   */
+  async recoverReplay(
+    client: CommandRequestClient,
+    key: CommandRequestKey,
+    error: unknown,
+  ): Promise<StoredCommandResponse | null> {
+    if (!this.isUniqueViolation(error)) {
+      return null;
+    }
+
+    return this.findExisting(client, key);
+  }
+
+  isUniqueViolation(error: unknown): boolean {
+    return (
+      typeof error === 'object' &&
+      error !== null &&
+      (error as { code?: string }).code === 'P2002'
+    );
+  }
 }

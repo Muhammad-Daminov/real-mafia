@@ -69,12 +69,35 @@ export class RoomsService {
    * IN_PROGRESS.
    */
   async createRoom(input: CreateRoomInput): Promise<CreatedRoom> {
+    const key = {
+      userId: input.userId,
+      endpoint: ENDPOINT_CREATE_ROOM,
+      clientRequestId: input.clientRequestId,
+    };
+
+    try {
+      return await this.createRoomTransaction(input, key);
+    } catch (error) {
+      const replay = await this.commandRequests.recoverReplay(
+        this.prisma,
+        key,
+        error,
+      );
+
+      if (replay) {
+        return replay.body as unknown as CreatedRoom;
+      }
+
+      throw error;
+    }
+  }
+
+  private async createRoomTransaction(
+    input: CreateRoomInput,
+    key: { userId: string; endpoint: string; clientRequestId: string },
+  ): Promise<CreatedRoom> {
     return this.prisma.$transaction(async (tx) => {
-      const replay = await this.commandRequests.findExisting(tx, {
-        userId: input.userId,
-        endpoint: ENDPOINT_CREATE_ROOM,
-        clientRequestId: input.clientRequestId,
-      });
+      const replay = await this.commandRequests.findExisting(tx, key);
 
       if (replay) {
         return replay.body as unknown as CreatedRoom;
@@ -123,15 +146,10 @@ export class RoomsService {
         rulesetMode: room.rulesetMode,
       };
 
-      await this.commandRequests.record(
-        tx,
-        {
-          userId: input.userId,
-          endpoint: ENDPOINT_CREATE_ROOM,
-          clientRequestId: input.clientRequestId,
-        },
-        { status: 201, body: response as unknown as Prisma.InputJsonValue },
-      );
+      await this.commandRequests.record(tx, key, {
+        status: 201,
+        body: response as unknown as Prisma.InputJsonValue,
+      });
 
       return response;
     });
@@ -181,7 +199,35 @@ export class RoomsService {
   async joinRoom(input: JoinRoomInput): Promise<JoinedRoom> {
     const room = await this.resolveOpenRoom(this.prisma, input.code);
     const gameId = room.activeGameId!;
+    const key = {
+      userId: input.userId,
+      endpoint: ENDPOINT_JOIN_ROOM,
+      clientRequestId: input.clientRequestId,
+    };
 
+    try {
+      return await this.joinRoomTransaction(input, room, gameId, key);
+    } catch (error) {
+      const replay = await this.commandRequests.recoverReplay(
+        this.prisma,
+        key,
+        error,
+      );
+
+      if (replay) {
+        return replay.body as unknown as JoinedRoom;
+      }
+
+      throw error;
+    }
+  }
+
+  private async joinRoomTransaction(
+    input: JoinRoomInput,
+    room: { id: string; maxPlayers: number },
+    gameId: string,
+    key: { userId: string; endpoint: string; clientRequestId: string },
+  ): Promise<JoinedRoom> {
     return this.prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<{ id: string; status: string }[]>`
         SELECT id, status FROM games WHERE id = ${gameId}::uuid FOR UPDATE
@@ -191,11 +237,7 @@ export class RoomsService {
         throw new RoomException(RoomErrorCode.ROOM_NOT_FOUND, 'Xona topilmadi');
       }
 
-      const replay = await this.commandRequests.findExisting(tx, {
-        userId: input.userId,
-        endpoint: ENDPOINT_JOIN_ROOM,
-        clientRequestId: input.clientRequestId,
-      });
+      const replay = await this.commandRequests.findExisting(tx, key);
 
       if (replay) {
         return replay.body as unknown as JoinedRoom;
@@ -238,15 +280,10 @@ export class RoomsService {
         maxPlayers: room.maxPlayers,
       };
 
-      await this.commandRequests.record(
-        tx,
-        {
-          userId: input.userId,
-          endpoint: ENDPOINT_JOIN_ROOM,
-          clientRequestId: input.clientRequestId,
-        },
-        { status: 201, body: response as unknown as Prisma.InputJsonValue },
-      );
+      await this.commandRequests.record(tx, key, {
+        status: 201,
+        body: response as unknown as Prisma.InputJsonValue,
+      });
 
       return response;
     });

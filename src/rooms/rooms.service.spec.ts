@@ -128,6 +128,29 @@ describe('RoomsService (integration)', () => {
       expect(roomCount).toBe(1);
     });
 
+    it('under two real concurrent requests with the same clientRequestId, exactly one Room is created and both responses are identical', async () => {
+      const host = await makeUser();
+      const clientRequestId = randomUUID();
+
+      const attempt = () =>
+        service.createRoom({
+          userId: host.id,
+          clientRequestId,
+          maxPlayers: 6,
+          rulesetMode: RulesetMode.NORMAL,
+        });
+
+      const [first, second] = await Promise.all([attempt(), attempt()]);
+      createdRoomIds.push(first.roomId);
+
+      expect(second).toEqual(first);
+
+      const roomCount = await prisma.room.count({
+        where: { creatorUserId: host.id },
+      });
+      expect(roomCount).toBe(1);
+    });
+
     it('rejects HOST_ALREADY_HOSTING when the user already hosts an IN_PROGRESS room', async () => {
       const host = await makeUser();
       const running = await createValidRoom(host.id);
@@ -260,6 +283,25 @@ describe('RoomsService (integration)', () => {
         where: { gameId: room.gameId },
       });
       expect(players).toHaveLength(2);
+    });
+
+    it('under two real concurrent requests with the same clientRequestId, exactly one join is recorded and both responses are identical', async () => {
+      const host = await makeUser();
+      const joiner = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 4 });
+      const clientRequestId = randomUUID();
+
+      const attempt = () =>
+        service.joinRoom({ userId: joiner.id, code: room.code, clientRequestId });
+
+      const [first, second] = await Promise.all([attempt(), attempt()]);
+
+      expect(second).toEqual(first);
+
+      const players = await prisma.gamePlayer.findMany({
+        where: { gameId: room.gameId, userId: joiner.id },
+      });
+      expect(players).toHaveLength(1);
     });
 
     it('rejects PLAYER_ALREADY_JOINED when the same player retries with a different clientRequestId', async () => {
