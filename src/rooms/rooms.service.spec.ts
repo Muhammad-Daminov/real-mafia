@@ -375,6 +375,45 @@ describe('RoomsService (integration)', () => {
       expect(players).toHaveLength(1);
     });
 
+    it('rejects PLAYER_ALREADY_JOINED for a player who already left, not some other code (OD-021 default: re-join prohibited)', async () => {
+      const host = await makeUser();
+      const joiner = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 4 });
+
+      await service.joinRoom({
+        userId: joiner.id,
+        code: room.code,
+        clientRequestId: randomUUID(),
+      });
+
+      await service.leaveRoom({
+        userId: joiner.id,
+        roomId: room.roomId,
+        clientRequestId: randomUUID(),
+      });
+
+      const left = await prisma.gamePlayer.findUniqueOrThrow({
+        where: { gameId_userId: { gameId: room.gameId, userId: joiner.id } },
+      });
+      expect(left.lifeStatus).toBe('LEFT');
+
+      await expect(
+        service.joinRoom({
+          userId: joiner.id,
+          code: room.code,
+          clientRequestId: randomUUID(),
+        }),
+      ).rejects.toMatchObject({ code: RoomErrorCode.PLAYER_ALREADY_JOINED });
+
+      // Confirms it's rejected, not silently re-activated: still exactly one
+      // GamePlayer row for this user, still LEFT.
+      const players = await prisma.gamePlayer.findMany({
+        where: { gameId: room.gameId, userId: joiner.id },
+      });
+      expect(players).toHaveLength(1);
+      expect(players[0].lifeStatus).toBe('LEFT');
+    });
+
     it('rejects GAME_FULL once the game is at capacity', async () => {
       const host = await makeUser();
       const filler1 = await makeUser();
