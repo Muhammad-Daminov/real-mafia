@@ -10,7 +10,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CommandRequestService } from '../common/command-requests/command-request.service';
-import { RoleAssignmentService } from '../game-engine/role-assignment.service';
+import { GameLifecycleService } from '../game-engine/game-lifecycle.service';
 import { RoomErrorCode, RoomException } from './rooms.errors';
 import {
   computePhaseDurationsSec,
@@ -175,7 +175,7 @@ export class RoomsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly commandRequests: CommandRequestService,
-    private readonly roleAssignment: RoleAssignmentService,
+    private readonly gameLifecycle: GameLifecycleService,
   ) {}
 
   /**
@@ -941,25 +941,21 @@ export class RoomsService {
         lastWordEnabled: isLastWordEnabled(room.rulesetMode),
       };
 
-      await tx.gamePlayer.updateMany({
-        where: { id: { in: activePlayers.map((p) => p.id) } },
-        data: { lifeStatus: LifeStatus.ALIVE },
-      });
-
-      // OD-041: role assignment is the Game Engine's write (§10.3), performed
-      // here — inside this same transaction/lock — so a game can never end up
+      // §10.3: games.status/current_phase and game_players.life_status (and
+      // role assignments) are Game-Engine-only writes — performed here, still
+      // inside this same transaction/lock, so a game can never be observed
       // RUNNING without roles dealt (no separate step, no undealt window).
-      await this.roleAssignment.dealRoles(tx, {
+      const { status, currentPhase } = await this.gameLifecycle.startGame(tx, {
         gameId,
         activePlayerIds: activePlayers.map((p) => p.id),
         roleDistribution,
       });
 
+      // startedAt/rulesVersion/configSnapshot aren't in §10.3's restricted
+      // field list — this remains RoomsService's own write, same transaction.
       await tx.game.update({
         where: { id: gameId },
         data: {
-          status: GameStatus.RUNNING,
-          currentPhase: GamePhaseName.ROLE_REVEAL,
           startedAt,
           rulesVersion: RULES_VERSION,
           configSnapshot: configSnapshot as unknown as Prisma.InputJsonValue,
@@ -974,8 +970,8 @@ export class RoomsService {
       const response: GameStarted = {
         roomId: room.id,
         gameId,
-        status: GameStatus.RUNNING,
-        currentPhase: GamePhaseName.ROLE_REVEAL,
+        status,
+        currentPhase,
         playerCount,
         rulesVersion: RULES_VERSION,
         startedAt: startedAt.toISOString(),

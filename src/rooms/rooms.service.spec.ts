@@ -4,6 +4,7 @@ import { RoomVisibility, RulesetMode } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CommandRequestService } from '../common/command-requests/command-request.service';
 import { RoleAssignmentService } from '../game-engine/role-assignment.service';
+import { GameLifecycleService } from '../game-engine/game-lifecycle.service';
 import { RoomsService } from './rooms.service';
 import { RoomErrorCode, RoomException } from './rooms.errors';
 
@@ -17,7 +18,8 @@ describe('RoomsService (integration)', () => {
   const prisma = new PrismaService();
   const commandRequests = new CommandRequestService();
   const roleAssignment = new RoleAssignmentService();
-  const service = new RoomsService(prisma, commandRequests, roleAssignment);
+  const gameLifecycle = new GameLifecycleService(roleAssignment);
+  const service = new RoomsService(prisma, commandRequests, gameLifecycle);
 
   const TEST_TELEGRAM_PREFIX = 'rooms-test-';
   let createdUserIds: string[] = [];
