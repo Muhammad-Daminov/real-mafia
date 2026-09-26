@@ -52,7 +52,8 @@ export interface ConsumedLaunchToken {
  * capability of the bot; a public mint endpoint would let anyone fabricate
  * launch context, which is precisely the attack the protocol exists to
  * prevent. The bot integration that calls `issue()` is a later phase (§43
- * phase 11); `consume()` is wired into `POST /auth/telegram` in the next slice.
+ * phase 11); `consume()` is wired into `POST /auth/telegram` (see
+ * `AuthService.loginWithTelegram`).
  *
  * Possessing a token is never itself authorization to act — `consume()`
  * returns only where the session launched from. Join still runs the full

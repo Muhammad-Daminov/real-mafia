@@ -3,6 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import { TelegramReplayGuardService } from './telegram-replay-guard.service';
+import { LaunchTokenService } from './launch-token.service';
 import { INIT_DATA_FRESHNESS_WINDOW_SECONDS } from './auth.constants';
 
 @Injectable()
@@ -11,9 +12,18 @@ export class AuthService {
   private readonly prisma: PrismaService,
   private readonly jwtService: JwtService,
   private readonly replayGuard: TelegramReplayGuardService,
+  private readonly launchTokenService: LaunchTokenService,
   ) {}
 
-  async loginWithTelegram(initData: string) {
+  /**
+   * §22.2's launch-token step runs only after initData has proven itself
+   * genuine and a User row exists to bind the token to — never before, and
+   * never on unauthenticated input. `launchToken` is optional: a user who
+   * isn't entering via a room-scoped deep link authenticates exactly as
+   * before. Token failures (OD-035's distinct codes) are deliberately left
+   * to propagate as-is, not caught and re-thrown as a generic auth error.
+   */
+  async loginWithTelegram(initData: string, launchToken?: string) {
     const botToken = process.env.BOT_TOKEN;
 
     if (!botToken) {
@@ -131,14 +141,26 @@ export class AuthService {
       },
     });
 
-  const accessToken = await this.jwtService.signAsync({
-  sub: user.id,
-  telegramId: user.telegramId,
-});
+    let roomId: string | null = null;
 
-return {
-  accessToken,
-  user,
-};
+    if (launchToken) {
+      const consumed = await this.launchTokenService.consume({
+        token: launchToken,
+        userId: user.id,
+      });
+
+      roomId = consumed.roomId;
+    }
+
+    const accessToken = await this.jwtService.signAsync({
+      sub: user.id,
+      telegramId: user.telegramId,
+    });
+
+    return {
+      accessToken,
+      user,
+      ...(roomId !== null ? { roomId } : {}),
+    };
   }
 }

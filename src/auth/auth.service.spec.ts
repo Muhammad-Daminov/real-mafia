@@ -3,6 +3,11 @@ import { createHmac } from 'crypto';
 import { AuthService } from './auth.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TelegramReplayGuardService } from './telegram-replay-guard.service';
+import { LaunchTokenService } from './launch-token.service';
+import {
+  LaunchTokenErrorCode,
+  LaunchTokenException,
+} from './launch-token.errors';
 import { JwtService } from '@nestjs/jwt';
 import { INIT_DATA_FRESHNESS_WINDOW_SECONDS } from './auth.constants';
 
@@ -58,6 +63,7 @@ describe('AuthService — initData replay protection', () => {
       { user: { upsert } } as unknown as PrismaService,
       { signAsync: jest.fn().mockResolvedValue('jwt-token') } as unknown as JwtService,
       { claim } as unknown as TelegramReplayGuardService,
+      { consume: jest.fn() } as unknown as LaunchTokenService,
     );
   });
 
@@ -122,5 +128,135 @@ describe('AuthService — initData replay protection', () => {
       BadRequestException,
     );
     expect(claim).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * F-04 (docs/audit/GAP_REPORT.md) / Master TZ §22.2, §30.1: wiring the
+ * launch-token protocol into POST /auth/telegram. initData verification
+ * (HMAC, freshness, replay) is unchanged and already covered above — these
+ * tests exercise only the token-binding step layered on top of it.
+ */
+describe('AuthService — launch token binding', () => {
+  const BOT_TOKEN_2 = 'test-bot-token-2';
+  const RESOLVED_USER_ID = '33333333-3333-4333-8333-333333333333';
+
+  const signInitData = (
+    fields: Record<string, string>,
+    botToken = BOT_TOKEN_2,
+  ): string => {
+    const dataCheckString = Object.entries(fields)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, value]) => `${key}=${value}`)
+      .join('\n');
+
+    const secretKey = createHmac('sha256', 'WebAppData')
+      .update(botToken)
+      .digest();
+
+    const hash = createHmac('sha256', secretKey)
+      .update(dataCheckString)
+      .digest('hex');
+
+    return new URLSearchParams({ ...fields, hash }).toString();
+  };
+
+  const validInitData = () =>
+    signInitData({
+      auth_date: String(Math.floor(Date.now() / 1000)),
+      user: JSON.stringify({ id: 67890, first_name: 'Vito' }),
+    });
+
+  let consume: jest.Mock;
+  let upsert: jest.Mock;
+  let service: AuthService;
+
+  beforeEach(() => {
+    process.env.BOT_TOKEN = BOT_TOKEN_2;
+
+    consume = jest.fn();
+    upsert = jest.fn().mockResolvedValue({
+      id: RESOLVED_USER_ID,
+      telegramId: '67890',
+    });
+
+    service = new AuthService(
+      { user: { upsert } } as unknown as PrismaService,
+      { signAsync: jest.fn().mockResolvedValue('jwt-token') } as unknown as JwtService,
+      { claim: jest.fn().mockResolvedValue(true) } as unknown as TelegramReplayGuardService,
+      { consume } as unknown as LaunchTokenService,
+    );
+  });
+
+  it('does not call the launch-token service when launchToken is absent (no regression)', async () => {
+    const result = await service.loginWithTelegram(validInitData());
+
+    expect(consume).not.toHaveBeenCalled();
+    expect(result).toEqual({ accessToken: 'jwt-token', user: expect.any(Object) });
+    expect(result).not.toHaveProperty('roomId');
+  });
+
+  it('consumes the token after the user is resolved and binds the resulting roomId', async () => {
+    const roomId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    consume.mockResolvedValue({ roomId });
+
+    const result = await service.loginWithTelegram(validInitData(), 'a-token');
+
+    expect(consume).toHaveBeenCalledWith({
+      token: 'a-token',
+      userId: RESOLVED_USER_ID,
+    });
+    // Called after the user upsert resolved, not before.
+    expect(upsert.mock.invocationCallOrder[0]).toBeLessThan(
+      consume.mock.invocationCallOrder[0],
+    );
+    expect(result.roomId).toBe(roomId);
+  });
+
+  it('omits roomId when an unbound (public-browser) token is consumed', async () => {
+    consume.mockResolvedValue({ roomId: null });
+
+    const result = await service.loginWithTelegram(validInitData(), 'a-token');
+
+    expect(result).not.toHaveProperty('roomId');
+  });
+
+  it.each([
+    LaunchTokenErrorCode.NOT_FOUND,
+    LaunchTokenErrorCode.EXPIRED,
+    LaunchTokenErrorCode.ALREADY_USED,
+    LaunchTokenErrorCode.ROOM_MISMATCH,
+  ])(
+    'surfaces %s from the launch-token service without swallowing it into a generic auth error',
+    async (code) => {
+      consume.mockRejectedValue(new LaunchTokenException(code, 'boom'));
+
+      const attempt = service.loginWithTelegram(validInitData(), 'a-token');
+
+      await expect(attempt).rejects.toBeInstanceOf(LaunchTokenException);
+      await expect(attempt).rejects.toMatchObject({ code });
+    },
+  );
+
+  it('rejects a token reused across two separate login calls, not just within one', async () => {
+    consume
+      .mockResolvedValueOnce({ roomId: null })
+      .mockRejectedValueOnce(
+        new LaunchTokenException(
+          LaunchTokenErrorCode.ALREADY_USED,
+          'already used',
+        ),
+      );
+
+    const first = await service.loginWithTelegram(validInitData(), 'reused-token');
+    expect(first).not.toHaveProperty('roomId');
+
+    await expect(
+      service.loginWithTelegram(validInitData(), 'reused-token'),
+    ).rejects.toMatchObject({ code: LaunchTokenErrorCode.ALREADY_USED });
+
+    // Every login call must re-invoke consume() itself — the service must
+    // never cache or short-circuit a prior result for the same token string.
+    expect(consume).toHaveBeenCalledTimes(2);
   });
 });

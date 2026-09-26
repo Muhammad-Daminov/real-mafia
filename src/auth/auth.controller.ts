@@ -1,6 +1,7 @@
 import { Body, Controller, Post, UseGuards } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
+import { LoginTelegramDto } from './dto/login-telegram.dto';
 import {
   AUTH_TELEGRAM_RATE_LIMIT,
   AUTH_TELEGRAM_RATE_LIMIT_TTL_MS,
@@ -24,7 +25,7 @@ export class AuthController {
       ttl: AUTH_TELEGRAM_RATE_LIMIT_TTL_MS,
     },
   })
-  login(@Body('initData') initData: string) {
-    return this.authService.loginWithTelegram(initData);
+  login(@Body() dto: LoginTelegramDto) {
+    return this.authService.loginWithTelegram(dto.initData, dto.launchToken);
   }
 }
