@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { randomInt } from 'crypto';
-import { Prisma, RulesetMode } from '@prisma/client';
+import { LifeStatus, Prisma, RulesetMode } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CommandRequestService } from '../common/command-requests/command-request.service';
 import { RoomErrorCode, RoomException } from './rooms.errors';
@@ -12,6 +12,12 @@ const CODE_GENERATION_MAX_ATTEMPTS = 5;
 
 const ENDPOINT_CREATE_ROOM = 'POST /rooms';
 const ENDPOINT_JOIN_ROOM = 'POST /rooms/:code/join';
+const ENDPOINT_LEAVE_ROOM = 'POST /rooms/:id/leave';
+const ENDPOINT_SET_READY = 'POST /rooms/:id/ready';
+const ENDPOINT_TRANSFER_HOST = 'POST /rooms/:id/host-transfer';
+
+/** A GamePlayer counts toward capacity/roster only while not LEFT (OD-037). */
+const ACTIVE_PLAYER_FILTER = { not: LifeStatus.LEFT };
 
 export interface CreateRoomInput {
   userId: string;
@@ -52,6 +58,49 @@ export interface JoinedRoom {
   playerId: string;
   playerCount: number;
   maxPlayers: number;
+}
+
+export interface LeaveRoomInput {
+  userId: string;
+  roomId: string;
+  clientRequestId: string;
+}
+
+export interface LeftRoom {
+  roomId: string;
+  gameId: string;
+  playerId: string;
+  playerCount: number;
+  newHostPlayerId: string | null;
+  roomClosed: boolean;
+}
+
+export interface SetReadyInput {
+  userId: string;
+  roomId: string;
+  clientRequestId: string;
+  isReady: boolean;
+}
+
+export interface ReadySet {
+  roomId: string;
+  gameId: string;
+  playerId: string;
+  isReady: boolean;
+}
+
+export interface TransferHostInput {
+  userId: string;
+  roomId: string;
+  clientRequestId: string;
+  targetPlayerId: string;
+}
+
+export interface HostTransferred {
+  roomId: string;
+  gameId: string;
+  previousHostPlayerId: string;
+  newHostPlayerId: string;
 }
 
 @Injectable()
@@ -163,14 +212,14 @@ export class RoomsService {
    * special-case it here.
    */
   async getRoomByCode(code: string): Promise<RoomSummary> {
-    const room = await this.resolveOpenRoom(this.prisma, code);
+    const room = await this.resolveOpenRoomByCode(this.prisma, code);
 
     const game = await this.prisma.game.findUniqueOrThrow({
       where: { id: room.activeGameId! },
     });
 
     const playerCount = await this.prisma.gamePlayer.count({
-      where: { gameId: room.activeGameId! },
+      where: { gameId: room.activeGameId!, lifeStatus: ACTIVE_PLAYER_FILTER },
     });
 
     return {
@@ -197,7 +246,7 @@ export class RoomsService {
    * (§19's "two players join simultaneously" scenario).
    */
   async joinRoom(input: JoinRoomInput): Promise<JoinedRoom> {
-    const room = await this.resolveOpenRoom(this.prisma, input.code);
+    const room = await this.resolveOpenRoomByCode(this.prisma, input.code);
     const gameId = room.activeGameId!;
     const key = {
       userId: input.userId,
@@ -262,7 +311,9 @@ export class RoomsService {
         );
       }
 
-      const playerCount = await tx.gamePlayer.count({ where: { gameId } });
+      const playerCount = await tx.gamePlayer.count({
+        where: { gameId, lifeStatus: ACTIVE_PLAYER_FILTER },
+      });
 
       if (playerCount >= room.maxPlayers) {
         throw new RoomException(RoomErrorCode.GAME_FULL, 'O‘yin to‘lgan');
@@ -289,14 +340,372 @@ export class RoomsService {
     });
   }
 
-  /** Shared by getRoomByCode and joinRoom's pre-lock lookup. */
-  private async resolveOpenRoom(
+  /**
+   * §15.3 / OD-037: leave is LOBBY-only, locks the game row (§6.3/§19), sets
+   * the caller's GamePlayer to LEFT, and — if the caller was host — transfers
+   * host per OD-013 (earliest joinedAt among remaining non-LEFT players), or
+   * cancels the game and closes the room if no one remains (§8.5 mapping).
+   */
+  async leaveRoom(input: LeaveRoomInput): Promise<LeftRoom> {
+    const room = await this.resolveOpenRoomById(this.prisma, input.roomId);
+    const gameId = room.activeGameId!;
+    const key = {
+      userId: input.userId,
+      endpoint: ENDPOINT_LEAVE_ROOM,
+      clientRequestId: input.clientRequestId,
+    };
+
+    try {
+      return await this.leaveRoomTransaction(input, room, gameId, key);
+    } catch (error) {
+      const replay = await this.commandRequests.recoverReplay(
+        this.prisma,
+        key,
+        error,
+      );
+
+      if (replay) {
+        return replay.body as unknown as LeftRoom;
+      }
+
+      throw error;
+    }
+  }
+
+  private async leaveRoomTransaction(
+    input: LeaveRoomInput,
+    room: { id: string },
+    gameId: string,
+    key: { userId: string; endpoint: string; clientRequestId: string },
+  ): Promise<LeftRoom> {
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<{ id: string; status: string }[]>`
+        SELECT id, status FROM games WHERE id = ${gameId}::uuid FOR UPDATE
+      `;
+
+      if (locked.length === 0) {
+        throw new RoomException(RoomErrorCode.ROOM_NOT_FOUND, 'Xona topilmadi');
+      }
+
+      const replay = await this.commandRequests.findExisting(tx, key);
+
+      if (replay) {
+        return replay.body as unknown as LeftRoom;
+      }
+
+      if (locked[0].status !== 'LOBBY') {
+        throw new RoomException(
+          RoomErrorCode.ROOM_NOT_IN_LOBBY,
+          'Bu amal endi lobbi bosqichida emas',
+        );
+      }
+
+      const game = await tx.game.findUniqueOrThrow({
+        where: { id: gameId },
+        select: { hostPlayerId: true },
+      });
+
+      const player = await tx.gamePlayer.findUnique({
+        where: { gameId_userId: { gameId, userId: input.userId } },
+      });
+
+      if (!player || player.lifeStatus === LifeStatus.LEFT) {
+        throw new RoomException(
+          RoomErrorCode.PLAYER_NOT_IN_GAME,
+          'Siz bu o‘yinda emassiz',
+        );
+      }
+
+      await tx.gamePlayer.update({
+        where: { id: player.id },
+        data: { lifeStatus: LifeStatus.LEFT },
+      });
+
+      const wasHost = game.hostPlayerId === player.id;
+      const remaining = await tx.gamePlayer.count({
+        where: { gameId, lifeStatus: ACTIVE_PLAYER_FILTER },
+      });
+
+      let newHostPlayerId: string | null = null;
+      let roomClosed = false;
+
+      if (wasHost) {
+        if (remaining === 0) {
+          await tx.game.update({
+            where: { id: gameId },
+            data: { status: 'CANCELLED', hostPlayerId: null },
+          });
+          await tx.room.update({
+            where: { id: room.id },
+            data: { status: 'CLOSED' },
+          });
+          roomClosed = true;
+        } else {
+          const nextHost = await tx.gamePlayer.findFirstOrThrow({
+            where: { gameId, lifeStatus: ACTIVE_PLAYER_FILTER },
+            orderBy: { joinedAt: 'asc' },
+            select: { id: true },
+          });
+
+          newHostPlayerId = nextHost.id;
+
+          await tx.game.update({
+            where: { id: gameId },
+            data: { hostPlayerId: newHostPlayerId },
+          });
+        }
+      }
+
+      const response: LeftRoom = {
+        roomId: room.id,
+        gameId,
+        playerId: player.id,
+        playerCount: remaining,
+        newHostPlayerId,
+        roomClosed,
+      };
+
+      await this.commandRequests.record(tx, key, {
+        status: 200,
+        body: response as unknown as Prisma.InputJsonValue,
+      });
+
+      return response;
+    });
+  }
+
+  /**
+   * §15.3 / OD-037 (OD-014): display-only readiness signal. LOBBY-only,
+   * lock-protected for the same §6.3/§19 reason as every other room command.
+   */
+  async setReady(input: SetReadyInput): Promise<ReadySet> {
+    const room = await this.resolveOpenRoomById(this.prisma, input.roomId);
+    const gameId = room.activeGameId!;
+    const key = {
+      userId: input.userId,
+      endpoint: ENDPOINT_SET_READY,
+      clientRequestId: input.clientRequestId,
+    };
+
+    try {
+      return await this.setReadyTransaction(input, room, gameId, key);
+    } catch (error) {
+      const replay = await this.commandRequests.recoverReplay(
+        this.prisma,
+        key,
+        error,
+      );
+
+      if (replay) {
+        return replay.body as unknown as ReadySet;
+      }
+
+      throw error;
+    }
+  }
+
+  private async setReadyTransaction(
+    input: SetReadyInput,
+    room: { id: string },
+    gameId: string,
+    key: { userId: string; endpoint: string; clientRequestId: string },
+  ): Promise<ReadySet> {
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<{ id: string; status: string }[]>`
+        SELECT id, status FROM games WHERE id = ${gameId}::uuid FOR UPDATE
+      `;
+
+      if (locked.length === 0) {
+        throw new RoomException(RoomErrorCode.ROOM_NOT_FOUND, 'Xona topilmadi');
+      }
+
+      const replay = await this.commandRequests.findExisting(tx, key);
+
+      if (replay) {
+        return replay.body as unknown as ReadySet;
+      }
+
+      if (locked[0].status !== 'LOBBY') {
+        throw new RoomException(
+          RoomErrorCode.ROOM_NOT_IN_LOBBY,
+          'Bu amal endi lobbi bosqichida emas',
+        );
+      }
+
+      const player = await tx.gamePlayer.findUnique({
+        where: { gameId_userId: { gameId, userId: input.userId } },
+      });
+
+      if (!player || player.lifeStatus === LifeStatus.LEFT) {
+        throw new RoomException(
+          RoomErrorCode.PLAYER_NOT_IN_GAME,
+          'Siz bu o‘yinda emassiz',
+        );
+      }
+
+      const updated = await tx.gamePlayer.update({
+        where: { id: player.id },
+        data: { isReady: input.isReady },
+      });
+
+      const response: ReadySet = {
+        roomId: room.id,
+        gameId,
+        playerId: updated.id,
+        isReady: updated.isReady,
+      };
+
+      await this.commandRequests.record(tx, key, {
+        status: 200,
+        body: response as unknown as Prisma.InputJsonValue,
+      });
+
+      return response;
+    });
+  }
+
+  /**
+   * §15.3 / OD-037 (OD-013): explicit host handoff, distinct from leave's
+   * automatic transfer. Only the current host may call it; re-checked inside
+   * the lock so a second, now-stale concurrent transfer is rejected rather
+   * than raced. Target lookup is IDOR-safe (`WHERE id = :targetId AND
+   * game_id = :gameId`, per §17.3's pattern), never a bare id lookup.
+   */
+  async transferHost(input: TransferHostInput): Promise<HostTransferred> {
+    const room = await this.resolveOpenRoomById(this.prisma, input.roomId);
+    const gameId = room.activeGameId!;
+    const key = {
+      userId: input.userId,
+      endpoint: ENDPOINT_TRANSFER_HOST,
+      clientRequestId: input.clientRequestId,
+    };
+
+    try {
+      return await this.transferHostTransaction(input, room, gameId, key);
+    } catch (error) {
+      const replay = await this.commandRequests.recoverReplay(
+        this.prisma,
+        key,
+        error,
+      );
+
+      if (replay) {
+        return replay.body as unknown as HostTransferred;
+      }
+
+      throw error;
+    }
+  }
+
+  private async transferHostTransaction(
+    input: TransferHostInput,
+    room: { id: string },
+    gameId: string,
+    key: { userId: string; endpoint: string; clientRequestId: string },
+  ): Promise<HostTransferred> {
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<{ id: string; status: string }[]>`
+        SELECT id, status FROM games WHERE id = ${gameId}::uuid FOR UPDATE
+      `;
+
+      if (locked.length === 0) {
+        throw new RoomException(RoomErrorCode.ROOM_NOT_FOUND, 'Xona topilmadi');
+      }
+
+      const replay = await this.commandRequests.findExisting(tx, key);
+
+      if (replay) {
+        return replay.body as unknown as HostTransferred;
+      }
+
+      if (locked[0].status !== 'LOBBY') {
+        throw new RoomException(
+          RoomErrorCode.ROOM_NOT_IN_LOBBY,
+          'Bu amal endi lobbi bosqichida emas',
+        );
+      }
+
+      const game = await tx.game.findUniqueOrThrow({
+        where: { id: gameId },
+        select: { hostPlayerId: true },
+      });
+
+      const caller = await tx.gamePlayer.findUnique({
+        where: { gameId_userId: { gameId, userId: input.userId } },
+        select: { id: true },
+      });
+
+      if (!caller || game.hostPlayerId !== caller.id) {
+        throw new RoomException(
+          RoomErrorCode.NOT_HOST,
+          'Faqat xona egasi buni bajara oladi',
+        );
+      }
+
+      let newHostPlayerId = caller.id;
+
+      if (input.targetPlayerId !== caller.id) {
+        const target = await tx.gamePlayer.findFirst({
+          where: {
+            id: input.targetPlayerId,
+            gameId,
+            lifeStatus: ACTIVE_PLAYER_FILTER,
+          },
+          select: { id: true },
+        });
+
+        if (!target) {
+          throw new RoomException(
+            RoomErrorCode.TARGET_NOT_IN_GAME,
+            'Belgilangan o‘yinchi topilmadi',
+          );
+        }
+
+        newHostPlayerId = target.id;
+
+        await tx.game.update({
+          where: { id: gameId },
+          data: { hostPlayerId: newHostPlayerId },
+        });
+      }
+
+      const response: HostTransferred = {
+        roomId: room.id,
+        gameId,
+        previousHostPlayerId: caller.id,
+        newHostPlayerId,
+      };
+
+      await this.commandRequests.record(tx, key, {
+        status: 200,
+        body: response as unknown as Prisma.InputJsonValue,
+      });
+
+      return response;
+    });
+  }
+
+  /** Shared by getRoomByCode and joinRoom's pre-lock lookup — keyed by code. */
+  private async resolveOpenRoomByCode(
     client: Pick<PrismaService, 'room'>,
     code: string,
   ) {
-    const room = await client.room.findFirst({
-      where: { code, status: { not: 'CLOSED' } },
-    });
+    return this.resolveOpenRoom(client, { code, status: { not: 'CLOSED' } });
+  }
+
+  /** Shared by leave/ready/host-transfer's pre-lock lookup — keyed by id. */
+  private async resolveOpenRoomById(
+    client: Pick<PrismaService, 'room'>,
+    id: string,
+  ) {
+    return this.resolveOpenRoom(client, { id, status: { not: 'CLOSED' } });
+  }
+
+  private async resolveOpenRoom(
+    client: Pick<PrismaService, 'room'>,
+    where: Prisma.RoomWhereInput,
+  ) {
+    const room = await client.room.findFirst({ where });
 
     if (!room || !room.activeGameId) {
       throw new RoomException(RoomErrorCode.ROOM_NOT_FOUND, 'Xona topilmadi');

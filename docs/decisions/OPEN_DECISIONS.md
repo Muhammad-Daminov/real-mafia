@@ -97,7 +97,15 @@ addition to §32 and should be folded into the Master TZ at the next revision.
 ### OD-036 — Join-Time "Game No Longer Joinable" Error Code · RESOLVED
 Decision: `POST /rooms/:code/join` rejects with `GAME_NOT_JOINABLE` (409,
 non-retryable) when the resolved game's status is anything other than
-`LOBBY` (already `RUNNING`, `PAUSED`, `FINISHED`, or `CANCELLED`).
+`LOBBY`. Every non-`LOBBY` status is folded into this single code —
+`RUNNING`, `PAUSED`, `FINISHED`, and `CANCELLED` are not distinguished from
+one another (and `DRAFT` is moot: §15.1 creates a game directly in `LOBBY`,
+so a join attempt can never observe `DRAFT`). `CANCELLED` was explicitly
+considered for its own code and rejected: from the joining client's
+perspective, "this game was cancelled" and "this game already finished" /
+"this game is already running" all resolve to the same next action — stop
+trying to join this one, look for or create another — so a separate code
+would add a distinction with no behavioral consequence for the client.
 Rationale: §15.2 specifies "same validation order and codes as v5.0 §15.2"
 including a status=LOBBY check, but that v5.0 code isn't reproduced in §32's
 error table (same carry-forward-gap class as OD-035's launch-token codes and
@@ -107,6 +115,77 @@ are valid — only this particular game has moved past the joinable window —
 and a client needs to tell "wrong/expired code" apart from "you're too late
 for this one" to render a sensible message. This code is an addition to §32
 and should be folded into the Master TZ at the next revision.
+
+### OD-037 — Leave / Ready / Host-Transfer Endpoint Mechanics · RESOLVED
+Context: §15.3 says only "unchanged mechanism from v5.0 §15.3-15.5 with
+`groupId`→`roomId` terminology only" — but the v5.0 document itself isn't
+present in this repo (v6.0 §1.2 states it supersedes v5.0 in full and is
+self-contained), and §30.1's endpoint table lists no path, method, request,
+or response shape for leaving, readiness, or host transfer at all. This is a
+deeper carry-forward gap than OD-035/OD-036 (those were missing error codes
+for an otherwise-specified mechanism; here the endpoint contract itself is
+unspecified). OD-013 (host transfer policy) and OD-014 (readiness policy)
+already resolve the *underlying rule*; this decision pins down the concrete
+endpoints needed to exercise them, following the same reasoning discipline.
+
+Decision:
+- Three endpoints, all `bearer`, all requiring `clientRequestId` (§19) and
+  going through the same `CommandRequestService` idempotency contract as
+  `POST /rooms` and `POST /rooms/:code/join`:
+  - `POST /rooms/:id/leave` — body `{ clientRequestId }`.
+  - `POST /rooms/:id/ready` — body `{ clientRequestId, isReady: boolean }`.
+  - `POST /rooms/:id/host-transfer` — body `{ clientRequestId, targetPlayerId }`.
+- All three key off the room's **id**, not its shareable code — by this
+  point the caller is already a seated player, not someone resolving a room
+  from a code/deep-link, so id (not a second code lookup) is the natural key.
+- All three run inside a transaction holding `SELECT games ... FOR UPDATE`
+  on the game row, per §6.3/§19's explicit invariant that "every
+  state-changing command executes inside one transaction holding a row lock
+  on the Room/Game" — this is not a new decision, just applying the
+  already-stated boundary to three more commands.
+- All three are LOBBY-only (`ROOM_NOT_FOUND` 404 if the room/game can't be
+  resolved at all — reusing the existing code, same semantics as join;
+  `ROOM_NOT_IN_LOBBY` 409 if the game exists but has left `LOBBY`). This
+  follows from OD-015 (resolved): once `RUNNING`, an unwanted departure is
+  handled as passive absence (disconnect), not an explicit leave action — a
+  "leave" concept mid-game isn't defined anywhere, so this endpoint doesn't
+  invent one.
+- `PLAYER_NOT_IN_GAME` (404): the caller has no `GamePlayer` row for this
+  game, or their row's `lifeStatus` is already `LEFT`. Both cases collapse
+  to the same code — "you are not currently seated here" — rather than
+  distinguishing "never joined" from "already left."
+- Leave: sets the caller's `GamePlayer.lifeStatus` to `LEFT`. If the caller
+  was host, host transfers automatically per OD-013 (earliest `joinedAt`
+  among remaining non-`LEFT` players). If no non-`LEFT` player remains, the
+  lobby is empty: `Game.status` → `CANCELLED` and `Room.status` → `CLOSED`,
+  directly implementing the §8.5 lifecycle mapping ("CLOSED = last game
+  FINISHED/CANCELLED and no new game started") rather than leaving an
+  abandoned, unreachable LOBBY game occupying a room code indefinitely.
+  Response: `{ roomId, gameId, playerId, playerCount, newHostPlayerId,
+  roomClosed }`. Re-joining after `LEFT` is not offered here — that's
+  OD-021 (open/non-blocking, default "prohibited"), already enforced by
+  `POST /rooms/:code/join`'s existing `PLAYER_ALREADY_JOINED` check, which
+  doesn't distinguish a fresh row from a `LEFT` one.
+- Ready: sets the caller's `GamePlayer.isReady` to the requested value.
+  Response: `{ roomId, gameId, playerId, isReady }`. Per OD-014, this is a
+  display-only signal — it gates nothing here and isn't expected to gate
+  `StartGame` when that endpoint is built.
+- Host-transfer: only the *current* host may call it (`NOT_HOST`, 403,
+  re-checked inside the lock so a second concurrent transfer request from a
+  now-stale host is rejected, not raced). The target must resolve to a
+  current non-`LEFT` `GamePlayer` in the same game (`TARGET_NOT_IN_GAME`,
+  404). Transferring to yourself is treated as a harmless no-op (200,
+  unchanged host) rather than inventing a distinct error code for a case
+  with no ambiguity. Response: `{ roomId, gameId, previousHostPlayerId,
+  newHostPlayerId }`. This is the *explicit* handoff path, kept as its own
+  endpoint distinct from leave's automatic transfer per §15.3's plural
+  "Leaving, Ready/Unready, Host [transfer]" framing, which reads as three
+  related but separate operations, not one shared code path.
+
+All four new codes (`ROOM_NOT_IN_LOBBY`, `PLAYER_NOT_IN_GAME`, `NOT_HOST`,
+`TARGET_NOT_IN_GAME`) plus the three endpoint response shapes above are
+additions to §30.1/§32 and should be folded into the Master TZ at the next
+revision, same as OD-035/OD-036.
 
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
@@ -136,5 +215,6 @@ None. Every previously blocking decision is resolved (see the addendum above).
   2026-09-25 addendum resolved them.)
 - OD-031–OD-034 are new in v6.0 (MASTER_TZ.md §42.2/§42.1) and non-blocking, each with a
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
-- Total: 26 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum), 0 open+blocking,
-  10 open+non-blocking (36 IDs, OD-001 through OD-036).
+- Total: 27 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum + OD-037 recorded
+  2026-09-26), 0 open+blocking, 10 open+non-blocking (37 IDs, OD-001 through
+  OD-037).

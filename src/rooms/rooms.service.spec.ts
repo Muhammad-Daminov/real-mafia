@@ -420,4 +420,535 @@ describe('RoomsService (integration)', () => {
       30000,
     );
   });
+
+  describe('leaveRoom', () => {
+    const leave = (userId: string, roomId: string) =>
+      service.leaveRoom({ userId, roomId, clientRequestId: randomUUID() });
+
+    it('sets the leaving player to LEFT and frees a slot for a new joiner', async () => {
+      const host = await makeUser();
+      const joiner = await makeUser();
+      const backfill = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 4 });
+
+      const joined = await service.joinRoom({
+        userId: joiner.id,
+        code: room.code,
+        clientRequestId: randomUUID(),
+      });
+
+      const left = await leave(joiner.id, room.roomId);
+
+      expect(left.playerCount).toBe(1);
+      expect(left.newHostPlayerId).toBeNull();
+      expect(left.roomClosed).toBe(false);
+
+      const player = await prisma.gamePlayer.findUniqueOrThrow({
+        where: { id: joined.playerId },
+      });
+      expect(player.lifeStatus).toBe('LEFT');
+
+      const backfilled = await service.joinRoom({
+        userId: backfill.id,
+        code: room.code,
+        clientRequestId: randomUUID(),
+      });
+      expect(backfilled.playerCount).toBe(2);
+    });
+
+    it('rejects ROOM_NOT_FOUND for an unknown room id', async () => {
+      const user = await makeUser();
+
+      await expect(leave(user.id, randomUUID())).rejects.toMatchObject({
+        code: RoomErrorCode.ROOM_NOT_FOUND,
+      });
+    });
+
+    it('rejects PLAYER_NOT_IN_GAME when the caller never joined', async () => {
+      const host = await makeUser();
+      const outsider = await makeUser();
+      const room = await createValidRoom(host.id);
+
+      await expect(leave(outsider.id, room.roomId)).rejects.toMatchObject({
+        code: RoomErrorCode.PLAYER_NOT_IN_GAME,
+      });
+    });
+
+    it('rejects PLAYER_NOT_IN_GAME on a second leave after already leaving', async () => {
+      const host = await makeUser();
+      const joiner = await makeUser();
+      const room = await createValidRoom(host.id);
+
+      await service.joinRoom({
+        userId: joiner.id,
+        code: room.code,
+        clientRequestId: randomUUID(),
+      });
+      await leave(joiner.id, room.roomId);
+
+      await expect(leave(joiner.id, room.roomId)).rejects.toMatchObject({
+        code: RoomErrorCode.PLAYER_NOT_IN_GAME,
+      });
+    });
+
+    it('rejects ROOM_NOT_IN_LOBBY once the game has left LOBBY', async () => {
+      const host = await makeUser();
+      const room = await createValidRoom(host.id);
+
+      await prisma.game.update({
+        where: { id: room.gameId },
+        data: { status: 'RUNNING' },
+      });
+
+      await expect(leave(host.id, room.roomId)).rejects.toMatchObject({
+        code: RoomErrorCode.ROOM_NOT_IN_LOBBY,
+      });
+    });
+
+    it('transfers host to the earliest-joined remaining player when the host leaves', async () => {
+      const host = await makeUser();
+      const earlier = await makeUser();
+      const later = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 4 });
+
+      await service.joinRoom({
+        userId: earlier.id,
+        code: room.code,
+        clientRequestId: randomUUID(),
+      });
+      await service.joinRoom({
+        userId: later.id,
+        code: room.code,
+        clientRequestId: randomUUID(),
+      });
+
+      const left = await leave(host.id, room.roomId);
+
+      expect(left.roomClosed).toBe(false);
+      expect(left.newHostPlayerId).not.toBeNull();
+
+      const game = await prisma.game.findUniqueOrThrow({
+        where: { id: room.gameId },
+      });
+      const newHost = await prisma.gamePlayer.findUniqueOrThrow({
+        where: { id: game.hostPlayerId! },
+      });
+      expect(newHost.userId).toBe(earlier.id);
+    });
+
+    it('cancels the game and closes the room when the last player (host) leaves', async () => {
+      const host = await makeUser();
+      const room = await createValidRoom(host.id);
+
+      const left = await leave(host.id, room.roomId);
+
+      expect(left.roomClosed).toBe(true);
+      expect(left.newHostPlayerId).toBeNull();
+      expect(left.playerCount).toBe(0);
+
+      const game = await prisma.game.findUniqueOrThrow({
+        where: { id: room.gameId },
+      });
+      expect(game.status).toBe('CANCELLED');
+
+      const persistedRoom = await prisma.room.findUniqueOrThrow({
+        where: { id: room.roomId },
+      });
+      expect(persistedRoom.status).toBe('CLOSED');
+    });
+
+    it('replays the stored response for a repeated clientRequestId', async () => {
+      const host = await makeUser();
+      const joiner = await makeUser();
+      const room = await createValidRoom(host.id);
+      const clientRequestId = randomUUID();
+
+      await service.joinRoom({
+        userId: joiner.id,
+        code: room.code,
+        clientRequestId: randomUUID(),
+      });
+
+      const first = await service.leaveRoom({
+        userId: joiner.id,
+        roomId: room.roomId,
+        clientRequestId,
+      });
+      const second = await service.leaveRoom({
+        userId: joiner.id,
+        roomId: room.roomId,
+        clientRequestId,
+      });
+
+      expect(second).toEqual(first);
+    });
+
+    it('under real concurrent leaves including the host, host-transfer never lands on a LEFT player', async () => {
+      // A 2-leaver version of this race (host + one other, both leaving
+      // concurrently) passed even with the FOR UPDATE lock deliberately
+      // removed during test development — the race window is real (without
+      // the lock, host-transfer can read a stale "still active" snapshot and
+      // hand hostPlayerId to a player who is concurrently leaving in the same
+      // instant), but two independent connections don't reliably overlap
+      // enough in real wall-clock time to hit it. Higher contention — many
+      // players leaving at once, one lone survivor — is what actually
+      // exercises the lock, same lesson as the join-capacity and
+      // host-transfer concurrency tests above.
+      const LEAVER_COUNT = 9;
+      const host = await makeUser();
+      const survivor = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 12 });
+
+      const others = await Promise.all(
+        Array.from({ length: LEAVER_COUNT - 1 }, () => makeUser()),
+      );
+
+      // `others` join before `survivor` on purpose: this makes some of the
+      // *leaving* players have earlier joinedAt than the one player who never
+      // leaves, so an unserialized host-transfer read can plausibly pick a
+      // concurrently-leaving "other" as next host instead of the survivor —
+      // if it only ever picked the survivor regardless of timing, this test
+      // couldn't distinguish locked from unlocked behavior.
+      for (const other of [...others, survivor]) {
+        await service.joinRoom({
+          userId: other.id,
+          code: room.code,
+          clientRequestId: randomUUID(),
+        });
+      }
+
+      const leavers = [host, ...others];
+      const settled = await Promise.allSettled(
+        leavers.map((leaver) => leave(leaver.id, room.roomId)),
+      );
+
+      expect(settled.every((r) => r.status === 'fulfilled')).toBe(true);
+
+      const game = await prisma.game.findUniqueOrThrow({
+        where: { id: room.gameId },
+      });
+      const finalHost = await prisma.gamePlayer.findUniqueOrThrow({
+        where: { id: game.hostPlayerId! },
+      });
+      // The correctness property the lock protects: hostPlayerId must never
+      // end up pointing at a player who has (or is concurrently) left.
+      expect(finalHost.lifeStatus).not.toBe('LEFT');
+      expect(finalHost.userId).toBe(survivor.id);
+
+      const active = await prisma.gamePlayer.findMany({
+        where: { gameId: room.gameId, lifeStatus: { not: 'LEFT' } },
+      });
+      expect(active).toHaveLength(1);
+      expect(active[0].userId).toBe(survivor.id);
+    });
+  });
+
+  describe('setReady', () => {
+    it('sets the caller isReady flag', async () => {
+      const host = await makeUser();
+      const room = await createValidRoom(host.id);
+
+      const result = await service.setReady({
+        userId: host.id,
+        roomId: room.roomId,
+        clientRequestId: randomUUID(),
+        isReady: true,
+      });
+
+      expect(result.isReady).toBe(true);
+
+      const player = await prisma.gamePlayer.findUniqueOrThrow({
+        where: { id: result.playerId },
+      });
+      expect(player.isReady).toBe(true);
+    });
+
+    it('rejects PLAYER_NOT_IN_GAME for a non-member', async () => {
+      const host = await makeUser();
+      const outsider = await makeUser();
+      const room = await createValidRoom(host.id);
+
+      await expect(
+        service.setReady({
+          userId: outsider.id,
+          roomId: room.roomId,
+          clientRequestId: randomUUID(),
+          isReady: true,
+        }),
+      ).rejects.toMatchObject({ code: RoomErrorCode.PLAYER_NOT_IN_GAME });
+    });
+
+    it('rejects ROOM_NOT_IN_LOBBY once the game has left LOBBY', async () => {
+      const host = await makeUser();
+      const room = await createValidRoom(host.id);
+
+      await prisma.game.update({
+        where: { id: room.gameId },
+        data: { status: 'RUNNING' },
+      });
+
+      await expect(
+        service.setReady({
+          userId: host.id,
+          roomId: room.roomId,
+          clientRequestId: randomUUID(),
+          isReady: true,
+        }),
+      ).rejects.toMatchObject({ code: RoomErrorCode.ROOM_NOT_IN_LOBBY });
+    });
+
+    it('replays the stored response for a repeated clientRequestId', async () => {
+      const host = await makeUser();
+      const room = await createValidRoom(host.id);
+      const clientRequestId = randomUUID();
+
+      const first = await service.setReady({
+        userId: host.id,
+        roomId: room.roomId,
+        clientRequestId,
+        isReady: true,
+      });
+      const second = await service.setReady({
+        userId: host.id,
+        roomId: room.roomId,
+        clientRequestId,
+        isReady: true,
+      });
+
+      expect(second).toEqual(first);
+    });
+
+    it('under real concurrency, a ready-toggle racing with another player leaving leaves both operations consistent', async () => {
+      const host = await makeUser();
+      const joiner = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 4 });
+
+      await service.joinRoom({
+        userId: joiner.id,
+        code: room.code,
+        clientRequestId: randomUUID(),
+      });
+
+      const [readyResult, leaveResult] = await Promise.all([
+        service.setReady({
+          userId: host.id,
+          roomId: room.roomId,
+          clientRequestId: randomUUID(),
+          isReady: true,
+        }),
+        service.leaveRoom({
+          userId: joiner.id,
+          roomId: room.roomId,
+          clientRequestId: randomUUID(),
+        }),
+      ]);
+
+      expect(readyResult.isReady).toBe(true);
+      expect(leaveResult.playerCount).toBe(1);
+
+      const hostPlayer = await prisma.gamePlayer.findUniqueOrThrow({
+        where: { id: readyResult.playerId },
+      });
+      expect(hostPlayer.isReady).toBe(true);
+
+      const joinerPlayer = await prisma.gamePlayer.findUniqueOrThrow({
+        where: { id: leaveResult.playerId },
+      });
+      expect(joinerPlayer.lifeStatus).toBe('LEFT');
+    });
+  });
+
+  describe('transferHost', () => {
+    it('transfers host to a specified target player', async () => {
+      const host = await makeUser();
+      const target = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 4 });
+
+      const joined = await service.joinRoom({
+        userId: target.id,
+        code: room.code,
+        clientRequestId: randomUUID(),
+      });
+
+      const result = await service.transferHost({
+        userId: host.id,
+        roomId: room.roomId,
+        clientRequestId: randomUUID(),
+        targetPlayerId: joined.playerId,
+      });
+
+      expect(result.newHostPlayerId).toBe(joined.playerId);
+
+      const game = await prisma.game.findUniqueOrThrow({
+        where: { id: room.gameId },
+      });
+      expect(game.hostPlayerId).toBe(joined.playerId);
+    });
+
+    it('no-ops when the target is the caller themself', async () => {
+      const host = await makeUser();
+      const room = await createValidRoom(host.id);
+
+      const game = await prisma.game.findUniqueOrThrow({
+        where: { id: room.gameId },
+      });
+
+      const result = await service.transferHost({
+        userId: host.id,
+        roomId: room.roomId,
+        clientRequestId: randomUUID(),
+        targetPlayerId: game.hostPlayerId!,
+      });
+
+      expect(result.newHostPlayerId).toBe(game.hostPlayerId);
+      expect(result.previousHostPlayerId).toBe(game.hostPlayerId);
+    });
+
+    it('rejects NOT_HOST when the caller is not the current host', async () => {
+      const host = await makeUser();
+      const nonHost = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 4 });
+
+      const joined = await service.joinRoom({
+        userId: nonHost.id,
+        code: room.code,
+        clientRequestId: randomUUID(),
+      });
+
+      await expect(
+        service.transferHost({
+          userId: nonHost.id,
+          roomId: room.roomId,
+          clientRequestId: randomUUID(),
+          targetPlayerId: joined.playerId,
+        }),
+      ).rejects.toMatchObject({ code: RoomErrorCode.NOT_HOST });
+    });
+
+    it('rejects TARGET_NOT_IN_GAME for an unknown target', async () => {
+      const host = await makeUser();
+      const room = await createValidRoom(host.id);
+
+      await expect(
+        service.transferHost({
+          userId: host.id,
+          roomId: room.roomId,
+          clientRequestId: randomUUID(),
+          targetPlayerId: randomUUID(),
+        }),
+      ).rejects.toMatchObject({ code: RoomErrorCode.TARGET_NOT_IN_GAME });
+    });
+
+    it('rejects TARGET_NOT_IN_GAME for a target who has already left', async () => {
+      const host = await makeUser();
+      const joiner = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 4 });
+
+      const joined = await service.joinRoom({
+        userId: joiner.id,
+        code: room.code,
+        clientRequestId: randomUUID(),
+      });
+      await service.leaveRoom({
+        userId: joiner.id,
+        roomId: room.roomId,
+        clientRequestId: randomUUID(),
+      });
+
+      await expect(
+        service.transferHost({
+          userId: host.id,
+          roomId: room.roomId,
+          clientRequestId: randomUUID(),
+          targetPlayerId: joined.playerId,
+        }),
+      ).rejects.toMatchObject({ code: RoomErrorCode.TARGET_NOT_IN_GAME });
+    });
+
+    it('replays the stored response for a repeated clientRequestId', async () => {
+      const host = await makeUser();
+      const target = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 4 });
+      const clientRequestId = randomUUID();
+
+      const joined = await service.joinRoom({
+        userId: target.id,
+        code: room.code,
+        clientRequestId: randomUUID(),
+      });
+
+      const first = await service.transferHost({
+        userId: host.id,
+        roomId: room.roomId,
+        clientRequestId,
+        targetPlayerId: joined.playerId,
+      });
+      const second = await service.transferHost({
+        userId: host.id,
+        roomId: room.roomId,
+        clientRequestId,
+        targetPlayerId: joined.playerId,
+      });
+
+      expect(second).toEqual(first);
+    });
+
+    it('under real concurrent host-transfer requests from the same host, exactly one succeeds and the rest get NOT_HOST', async () => {
+      // A 2-contender version of this race passed even with the FOR UPDATE
+      // lock deliberately removed during test development (two independent
+      // connections don't reliably overlap enough in real wall-clock time to
+      // hit the race) — same lesson as the join-capacity concurrency test.
+      // Higher contention is what actually exercises the lock.
+      const CANDIDATE_COUNT = 10;
+      const host = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 12 });
+
+      const candidates = await Promise.all(
+        Array.from({ length: CANDIDATE_COUNT }, () => makeUser()),
+      );
+      const joined: Awaited<ReturnType<typeof service.joinRoom>>[] = [];
+      for (const candidate of candidates) {
+        joined.push(
+          await service.joinRoom({
+            userId: candidate.id,
+            code: room.code,
+            clientRequestId: randomUUID(),
+          }),
+        );
+      }
+
+      const attempt = (targetPlayerId: string) =>
+        service.transferHost({
+          userId: host.id,
+          roomId: room.roomId,
+          clientRequestId: randomUUID(),
+          targetPlayerId,
+        });
+
+      const settled = await Promise.allSettled(
+        joined.map((j) => attempt(j.playerId)),
+      );
+
+      const fulfilled = settled.filter(
+        (r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof attempt>>> =>
+          r.status === 'fulfilled',
+      );
+      const rejected = settled.filter(
+        (r): r is PromiseRejectedResult => r.status === 'rejected',
+      );
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(CANDIDATE_COUNT - 1);
+      expect(
+        rejected.every(
+          (r) => (r.reason as RoomException).code === RoomErrorCode.NOT_HOST,
+        ),
+      ).toBe(true);
+
+      const game = await prisma.game.findUniqueOrThrow({
+        where: { id: room.gameId },
+      });
+      expect(game.hostPlayerId).toBe(fulfilled[0].value.newHostPlayerId);
+    });
+  });
 });
