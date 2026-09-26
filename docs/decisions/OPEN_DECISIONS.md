@@ -256,6 +256,92 @@ creates without explicitly choosing "public" should not become discoverable
 by strangers by accident. This is an addition to §8.2/§30.1 and should be
 folded into the Master TZ at the next revision, same as OD-035–038.
 
+### OD-040 — StartGame Endpoint Contract (Slice 1: Validation + Status Transition) · RESOLVED
+Context: §10.2's phase diagram names `LOBBY --> ROLE_REVEAL : StartGame` and
+§13.2/§14.2 describe StartGame's validation and config-freezing rules in
+detail, but **no HTTP endpoint for StartGame appears anywhere in §30.1** —
+not even a path stub, unlike leave/ready/host-transfer where OD-037 at least
+had OD-013/014's policy layer to build on. This is the same
+deeper-than-error-codes gap class as OD-037. This decision covers only what
+Slice 1 (validation + status transition) needs; role assignment (creating
+`GameRoleAssignment`-equivalent rows) is explicitly out of scope here — those
+models don't exist in the schema yet and this decision does not design them.
+
+Decision:
+- **`POST /rooms/:id/start`** — id-keyed like leave/ready/host-transfer (the
+  caller is already seated), `bearer`, `clientRequestId` required, same
+  `CommandRequestService`/`recoverReplay` idempotency contract as every other
+  room command, `SELECT games ... FOR UPDATE` per §6.3/§19.
+- **Host-only.** No spec text says otherwise, and every other host-scoped
+  power in this codebase (cancel, host-transfer) is host-only; reuses the
+  existing `NOT_HOST` (403) code from OD-037 rather than inventing a
+  synonym for the identical failure mode.
+- **Minimum player count is the fixed constant 4** — not room-specific and
+  not derived from the room's `maxPlayers`. §13.1's distribution table's
+  *lowest defined row* is 4 players; §13.2 requires "the joined player count
+  has [a] row in this table," and no row exists below 4 for any room
+  configuration. A room's `maxPlayers` is a ceiling on who *can* join, not a
+  floor on when the host *may* start — those are different concerns, and
+  the table settles the floor unambiguously. Player count uses the same
+  LEFT-exclusion convention as every other roster count in this module
+  (OD-037). Failure code: `NOT_ENOUGH_PLAYERS` (409) — a new code, since no
+  v5.0/v6.0 text names this specific failure. `CONFIG_INVALID` (422) is
+  reused verbatim from §13.2's own text for the (currently unreachable, but
+  spec-mandated) "player count has no matching row" case — join's existing
+  4-24 bound plus this same 4-player floor mean every reachable count 4-24
+  always has a row, so this path exists for defense-in-depth, not because a
+  live gap in validation elsewhere could otherwise be hit today.
+- **Readiness does NOT gate start**, per OD-014 (already resolved): "StartGame
+  requires only playerCount >= minPlayers... is_ready is a display-only
+  signal and does not gate StartGame. Host may start regardless of how many
+  players are marked ready." No ready-related check or error code exists in
+  this endpoint — implementing one would contradict an already-resolved
+  decision, not fill a gap.
+- **Wrong-status failures reuse `ROOM_NOT_IN_LOBBY`** (409, OD-037) — calling
+  start on an already-`RUNNING`, `CANCELLED`, `FINISHED`, or `PAUSED` game is
+  the same "not currently LOBBY" failure mode already named for leave/ready/
+  host-transfer, not a distinct code.
+- **Resulting state**: `Game.status` → `RUNNING`, `Game.currentPhase` →
+  `ROLE_REVEAL` (directly, per the phase diagram — there is no intermediate
+  "STARTING" phase in the schema's `GamePhaseName` enum, so none is
+  invented), `Game.startedAt` → now, `Game.rulesVersion` → `"6.0.0"` (§13.1's
+  fixed value). Every currently-seated non-`LEFT` `GamePlayer.lifeStatus` →
+  `ALIVE` (from `WAITING`) — this is a life-status transition, not a role
+  assignment, and has no other spec-described exit from `WAITING`; leaving it
+  at `WAITING` into a `RUNNING` game would be a worse gap than setting it.
+  `Room.status` → `IN_PROGRESS` (§8.5's mapping: `IN_PROGRESS` = `RUNNING`/
+  `PAUSED`), which is also what makes `HOST_ALREADY_HOSTING` (§15.1) and the
+  room disappearing from `GET /rooms/public` actually reachable through the
+  real API for the first time — both already implemented against this
+  status value, previously only reachable in tests via a forced Prisma write.
+- **`config_snapshot` is populated, but only with the fields this slice
+  itself computes or validates against**: `rulesVersion`, `roomId`,
+  `rulesetMode`, `minPlayers` (4), `maxPlayers` (24 — §13.1's table ceiling,
+  an engine-wide bound documenting the table's range, not this room's chosen
+  cap, which is a separate concern already captured on the Room row itself),
+  `roleDistribution` (the §13.1 row for the actual seated count — the same
+  row this slice's validation already looked up), `phaseDurationsSec` (§14.2,
+  computed from seated count + ruleset mode), `lastWordEnabled` (derived from
+  `rulesetMode` per §13.3). The remaining fields in §14.1's full JSON shape
+  (`mafiaKillPolicy`, `doctorSelfProtection`, `doctorRepeatProtection`,
+  `doctorProtectionScope`, `detectiveResultSemantics`, `tiePolicy`,
+  `voteVisibility`, `revealRoleOnDeath`, `firstNightKillAllowed`,
+  `maxNightDeaths`, `chatEnabled`, `language`) are deliberately **not**
+  embedded yet — they are already-resolved OD defaults, but nothing in this
+  slice reads or validates them, and embedding them here would be deciding
+  night-action/voting/chat scope from inside a lobby-transition slice. The
+  slices that actually consume each field (night resolution, voting, chat)
+  should add it to `config_snapshot` when built — the JSON column is
+  additive, so this is a safe deferral, not a breaking one.
+- **Role assignment is explicitly not this decision's concern.** No
+  `Role`/`GameRoleAssignment`-equivalent table exists in the schema yet, so
+  nothing is stubbed for it — Slice 2 owns designing and creating those
+  tables and rows; this slice only guarantees `config_snapshot.roleDistribution`
+  is frozen and available for Slice 2 to consume as its input.
+
+This is an addition to §30.1/§32 and should be folded into the Master TZ at
+the next revision, same as OD-035–039.
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
 None. Every previously blocking decision is resolved (see the addendum above).
@@ -284,6 +370,6 @@ None. Every previously blocking decision is resolved (see the addendum above).
   2026-09-25 addendum resolved them.)
 - OD-031–OD-034 are new in v6.0 (MASTER_TZ.md §42.2/§42.1) and non-blocking, each with a
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
-- Total: 29 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
-  OD-037/OD-038/OD-039 recorded 2026-09-26), 0 open+blocking, 10
-  open+non-blocking (39 IDs, OD-001 through OD-039).
+- Total: 30 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
+  OD-037/OD-038/OD-039/OD-040 recorded 2026-09-26), 0 open+blocking, 10
+  open+non-blocking (40 IDs, OD-001 through OD-040).

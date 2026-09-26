@@ -17,6 +17,7 @@ import { ListPublicRoomsDto } from './dto/list-public-rooms.dto';
 import { LeaveRoomDto } from './dto/leave-room.dto';
 import { SetReadyDto } from './dto/set-ready.dto';
 import { TransferHostDto } from './dto/transfer-host.dto';
+import { StartGameDto } from './dto/start-game.dto';
 
 /** Master TZ §30.1/OD-037: all endpoints are `bearer` — authenticated only. */
 @Controller('rooms')
@@ -102,6 +103,19 @@ export class RoomsController {
       roomId: id,
       clientRequestId: dto.clientRequestId,
       targetPlayerId: dto.targetPlayerId,
+    });
+  }
+
+  @Post(':id/start')
+  start(
+    @Req() req: RequestWithUser,
+    @Param('id') id: string,
+    @Body() dto: StartGameDto,
+  ) {
+    return this.roomsService.startGame({
+      userId: req.user.userId,
+      roomId: id,
+      clientRequestId: dto.clientRequestId,
     });
   }
 }

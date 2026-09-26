@@ -10,7 +10,8 @@ import { HttpException, HttpStatus } from '@nestjs/common';
  * OD-035's launch-token codes). GAME_NOT_JOINABLE is new — see OD-036.
  * ROOM_NOT_IN_LOBBY, PLAYER_NOT_IN_GAME, NOT_HOST, and TARGET_NOT_IN_GAME are
  * new — see OD-037 (docs/decisions/OPEN_DECISIONS.md) for why each is needed
- * and its rationale.
+ * and its rationale. NOT_ENOUGH_PLAYERS is new — see OD-040. CONFIG_INVALID
+ * is a v5.0 §33.2 carry-forward code, named verbatim in §13.2's own text.
  */
 export enum RoomErrorCode {
   ROOM_NOT_FOUND = 'ROOM_NOT_FOUND',
@@ -22,6 +23,8 @@ export enum RoomErrorCode {
   PLAYER_NOT_IN_GAME = 'PLAYER_NOT_IN_GAME',
   NOT_HOST = 'NOT_HOST',
   TARGET_NOT_IN_GAME = 'TARGET_NOT_IN_GAME',
+  NOT_ENOUGH_PLAYERS = 'NOT_ENOUGH_PLAYERS',
+  CONFIG_INVALID = 'CONFIG_INVALID',
 }
 
 const STATUS_BY_CODE: Record<RoomErrorCode, HttpStatus> = {
@@ -34,6 +37,8 @@ const STATUS_BY_CODE: Record<RoomErrorCode, HttpStatus> = {
   [RoomErrorCode.PLAYER_NOT_IN_GAME]: HttpStatus.NOT_FOUND, // 404
   [RoomErrorCode.NOT_HOST]: HttpStatus.FORBIDDEN, // 403
   [RoomErrorCode.TARGET_NOT_IN_GAME]: HttpStatus.NOT_FOUND, // 404
+  [RoomErrorCode.NOT_ENOUGH_PLAYERS]: HttpStatus.CONFLICT, // 409
+  [RoomErrorCode.CONFIG_INVALID]: HttpStatus.UNPROCESSABLE_ENTITY, // 422
 };
 
 /**

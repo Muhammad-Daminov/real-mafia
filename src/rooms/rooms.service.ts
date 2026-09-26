@@ -1,9 +1,24 @@
 import { Injectable } from '@nestjs/common';
 import { randomInt } from 'crypto';
-import { LifeStatus, Prisma, RoomVisibility, RulesetMode } from '@prisma/client';
+import {
+  GamePhaseName,
+  GameStatus,
+  LifeStatus,
+  Prisma,
+  RoomVisibility,
+  RulesetMode,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CommandRequestService } from '../common/command-requests/command-request.service';
 import { RoomErrorCode, RoomException } from './rooms.errors';
+import {
+  computePhaseDurationsSec,
+  isLastWordEnabled,
+  lookupRoleDistribution,
+  MAX_PLAYERS_CEILING,
+  MIN_PLAYERS_TO_START,
+  RULES_VERSION,
+} from './start-game.config';
 
 /** Excludes 0/O, 1/I/L — a human types this code into a join box. */
 const ROOM_CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -15,6 +30,7 @@ const ENDPOINT_JOIN_ROOM = 'POST /rooms/:code/join';
 const ENDPOINT_LEAVE_ROOM = 'POST /rooms/:id/leave';
 const ENDPOINT_SET_READY = 'POST /rooms/:id/ready';
 const ENDPOINT_TRANSFER_HOST = 'POST /rooms/:id/host-transfer';
+const ENDPOINT_START_GAME = 'POST /rooms/:id/start';
 
 /** A GamePlayer counts toward capacity/roster only while not LEFT (OD-037). */
 const ACTIVE_PLAYER_FILTER = { not: LifeStatus.LEFT };
@@ -128,6 +144,29 @@ export interface PublicRoomsPage {
   limit: number;
   totalCount: number;
   totalPages: number;
+}
+
+export interface StartGameInput {
+  userId: string;
+  roomId: string;
+  clientRequestId: string;
+}
+
+/**
+ * OD-040 (Slice 1): status/phase transition + frozen config only — no role
+ * rows. `startedAt` is an ISO string, not a `Date`: the response crosses a
+ * JSON boundary either way (HTTP, and the CommandRequest replay store), so a
+ * `Date` here would silently become a string on replay while staying a `Date`
+ * on the first call — this keeps both paths identical.
+ */
+export interface GameStarted {
+  roomId: string;
+  gameId: string;
+  status: GameStatus;
+  currentPhase: GamePhaseName;
+  playerCount: number;
+  rulesVersion: string;
+  startedAt: string;
 }
 
 @Injectable()
@@ -767,6 +806,168 @@ export class RoomsService {
         gameId,
         previousHostPlayerId: caller.id,
         newHostPlayerId,
+      };
+
+      await this.commandRequests.record(tx, key, {
+        status: 200,
+        body: response as unknown as Prisma.InputJsonValue,
+      });
+
+      return response;
+    });
+  }
+
+  /**
+   * §10.2/§13.2/§14 / OD-040 — Slice 1: validation + status/phase transition
+   * only. No role assignment happens here (no such table exists yet; Slice 2
+   * owns that). Host-only, LOBBY-only, playerCount >= MIN_PLAYERS_TO_START
+   * (OD-014: readiness never gates this). Transitions Game LOBBY->RUNNING /
+   * LOBBY->ROLE_REVEAL, seats every active player as ALIVE, freezes
+   * rulesVersion + a config_snapshot subset into the row, and flips Room to
+   * IN_PROGRESS (§8.5) — which is also what makes HOST_ALREADY_HOSTING and
+   * GET /rooms/public's exclusion of started rooms reachable for real.
+   */
+  async startGame(input: StartGameInput): Promise<GameStarted> {
+    const room = await this.resolveOpenRoomById(this.prisma, input.roomId);
+    const gameId = room.activeGameId!;
+    const key = {
+      userId: input.userId,
+      endpoint: ENDPOINT_START_GAME,
+      clientRequestId: input.clientRequestId,
+    };
+
+    try {
+      return await this.startGameTransaction(input, room, gameId, key);
+    } catch (error) {
+      const replay = await this.commandRequests.recoverReplay(
+        this.prisma,
+        key,
+        error,
+      );
+
+      if (replay) {
+        return replay.body as unknown as GameStarted;
+      }
+
+      throw error;
+    }
+  }
+
+  private async startGameTransaction(
+    input: StartGameInput,
+    room: { id: string; rulesetMode: RulesetMode },
+    gameId: string,
+    key: { userId: string; endpoint: string; clientRequestId: string },
+  ): Promise<GameStarted> {
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<{ id: string; status: string }[]>`
+        SELECT id, status FROM games WHERE id = ${gameId}::uuid FOR UPDATE
+      `;
+
+      if (locked.length === 0) {
+        throw new RoomException(RoomErrorCode.ROOM_NOT_FOUND, 'Xona topilmadi');
+      }
+
+      const replay = await this.commandRequests.findExisting(tx, key);
+
+      if (replay) {
+        return replay.body as unknown as GameStarted;
+      }
+
+      if (locked[0].status !== 'LOBBY') {
+        throw new RoomException(
+          RoomErrorCode.ROOM_NOT_IN_LOBBY,
+          'Bu amal endi lobbi bosqichida emas',
+        );
+      }
+
+      const game = await tx.game.findUniqueOrThrow({
+        where: { id: gameId },
+        select: { hostPlayerId: true },
+      });
+
+      const caller = await tx.gamePlayer.findUnique({
+        where: { gameId_userId: { gameId, userId: input.userId } },
+        select: { id: true },
+      });
+
+      if (!caller || game.hostPlayerId !== caller.id) {
+        throw new RoomException(
+          RoomErrorCode.NOT_HOST,
+          'Faqat xona egasi o‘yinni boshlay oladi',
+        );
+      }
+
+      const activePlayers = await tx.gamePlayer.findMany({
+        where: { gameId, lifeStatus: ACTIVE_PLAYER_FILTER },
+        select: { id: true },
+      });
+      const playerCount = activePlayers.length;
+
+      if (playerCount < MIN_PLAYERS_TO_START) {
+        throw new RoomException(
+          RoomErrorCode.NOT_ENOUGH_PLAYERS,
+          `O‘yinni boshlash uchun kamida ${MIN_PLAYERS_TO_START} o‘yinchi kerak`,
+        );
+      }
+
+      const roleDistribution = lookupRoleDistribution(playerCount);
+
+      if (!roleDistribution) {
+        // §13.2: unreachable given the 4-24 bounds enforced at join/create,
+        // kept as defense-in-depth rather than an assumption.
+        throw new RoomException(
+          RoomErrorCode.CONFIG_INVALID,
+          'O‘yinchilar soni uchun konfiguratsiya topilmadi',
+        );
+      }
+
+      const startedAt = new Date();
+      const phaseDurationsSec = computePhaseDurationsSec(
+        room.rulesetMode,
+        playerCount,
+      );
+
+      const configSnapshot = {
+        rulesVersion: RULES_VERSION,
+        roomId: room.id,
+        rulesetMode: room.rulesetMode,
+        minPlayers: MIN_PLAYERS_TO_START,
+        maxPlayers: MAX_PLAYERS_CEILING, // engine-wide bound (§13.1's table range), not this room's chosen cap
+        roleDistribution,
+        phaseDurationsSec,
+        lastWordEnabled: isLastWordEnabled(room.rulesetMode),
+      };
+
+      await tx.gamePlayer.updateMany({
+        where: { id: { in: activePlayers.map((p) => p.id) } },
+        data: { lifeStatus: LifeStatus.ALIVE },
+      });
+
+      await tx.game.update({
+        where: { id: gameId },
+        data: {
+          status: GameStatus.RUNNING,
+          currentPhase: GamePhaseName.ROLE_REVEAL,
+          startedAt,
+          rulesVersion: RULES_VERSION,
+          configSnapshot: configSnapshot as unknown as Prisma.InputJsonValue,
+        },
+      });
+
+      await tx.room.update({
+        where: { id: room.id },
+        data: { status: 'IN_PROGRESS' },
+      });
+
+      const response: GameStarted = {
+        roomId: room.id,
+        gameId,
+        status: GameStatus.RUNNING,
+        currentPhase: GamePhaseName.ROLE_REVEAL,
+        playerCount,
+        rulesVersion: RULES_VERSION,
+        startedAt: startedAt.toISOString(),
       };
 
       await this.commandRequests.record(tx, key, {

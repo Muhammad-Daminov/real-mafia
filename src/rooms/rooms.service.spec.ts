@@ -1160,4 +1160,284 @@ describe('RoomsService (integration)', () => {
       expect(game.hostPlayerId).toBe(fulfilled[0].value.newHostPlayerId);
     });
   });
+
+  describe('startGame', () => {
+    const start = (userId: string, roomId: string) =>
+      service.startGame({ userId, roomId, clientRequestId: randomUUID() });
+
+    it('rejects ROOM_NOT_FOUND for an unknown room id', async () => {
+      const host = await makeUser();
+
+      await expect(start(host.id, randomUUID())).rejects.toMatchObject({
+        code: RoomErrorCode.ROOM_NOT_FOUND,
+      });
+    });
+
+    it('rejects NOT_HOST when the caller is not the current host', async () => {
+      const host = await makeUser();
+      const nonHost = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 6 });
+
+      await service.joinRoom({
+        userId: nonHost.id,
+        code: room.code,
+        clientRequestId: randomUUID(),
+      });
+
+      await expect(start(nonHost.id, room.roomId)).rejects.toMatchObject({
+        code: RoomErrorCode.NOT_HOST,
+      });
+    });
+
+    it('rejects NOT_ENOUGH_PLAYERS below the 4-player floor (OD-040)', async () => {
+      const host = await makeUser();
+      const second = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 6 });
+
+      await service.joinRoom({
+        userId: second.id,
+        code: room.code,
+        clientRequestId: randomUUID(),
+      });
+      // host + second = 2, below MIN_PLAYERS_TO_START (4).
+
+      await expect(start(host.id, room.roomId)).rejects.toMatchObject({
+        code: RoomErrorCode.NOT_ENOUGH_PLAYERS,
+      });
+    });
+
+    it('does NOT require all players to be ready (OD-014 — display-only)', async () => {
+      const host = await makeUser();
+      const others = await Promise.all([makeUser(), makeUser(), makeUser()]);
+      const room = await createValidRoom(host.id, { maxPlayers: 6 });
+
+      for (const other of others) {
+        await service.joinRoom({
+          userId: other.id,
+          code: room.code,
+          clientRequestId: randomUUID(),
+        });
+      }
+      // Nobody, including the host, ever called setReady — all isReady=false.
+
+      const result = await start(host.id, room.roomId);
+
+      expect(result.status).toBe('RUNNING');
+    });
+
+    it('rejects ROOM_NOT_IN_LOBBY when the game already started', async () => {
+      const host = await makeUser();
+      const others = await Promise.all([makeUser(), makeUser(), makeUser()]);
+      const room = await createValidRoom(host.id, { maxPlayers: 6 });
+
+      for (const other of others) {
+        await service.joinRoom({
+          userId: other.id,
+          code: room.code,
+          clientRequestId: randomUUID(),
+        });
+      }
+
+      await start(host.id, room.roomId);
+
+      await expect(start(host.id, room.roomId)).rejects.toMatchObject({
+        code: RoomErrorCode.ROOM_NOT_IN_LOBBY,
+      });
+    });
+
+    it('rejects ROOM_NOT_IN_LOBBY when the game was cancelled', async () => {
+      const host = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 6 });
+
+      await prisma.game.update({
+        where: { id: room.gameId },
+        data: { status: 'CANCELLED' },
+      });
+
+      await expect(start(host.id, room.roomId)).rejects.toMatchObject({
+        code: RoomErrorCode.ROOM_NOT_IN_LOBBY,
+      });
+    });
+
+    it('transitions status/phase, seats players ALIVE, freezes config, and flips the room to IN_PROGRESS', async () => {
+      const host = await makeUser();
+      const others = await Promise.all([makeUser(), makeUser(), makeUser()]);
+      const room = await createValidRoom(host.id, { maxPlayers: 8 });
+
+      for (const other of others) {
+        await service.joinRoom({
+          userId: other.id,
+          code: room.code,
+          clientRequestId: randomUUID(),
+        });
+      }
+
+      const before = new Date();
+      const result = await start(host.id, room.roomId);
+      const after = new Date();
+
+      expect(result.status).toBe('RUNNING');
+      expect(result.currentPhase).toBe('ROLE_REVEAL');
+      expect(result.playerCount).toBe(4);
+      expect(result.rulesVersion).toBe('6.0.0');
+      const startedAt = new Date(result.startedAt);
+      expect(startedAt.getTime()).toBeGreaterThanOrEqual(before.getTime());
+      expect(startedAt.getTime()).toBeLessThanOrEqual(after.getTime());
+
+      const game = await prisma.game.findUniqueOrThrow({
+        where: { id: room.gameId },
+      });
+      expect(game.status).toBe('RUNNING');
+      expect(game.currentPhase).toBe('ROLE_REVEAL');
+      expect(game.rulesVersion).toBe('6.0.0');
+      expect(game.startedAt).not.toBeNull();
+
+      const snapshot = game.configSnapshot as Record<string, unknown>;
+      expect(snapshot.minPlayers).toBe(4);
+      expect(snapshot.maxPlayers).toBe(24);
+      expect(snapshot.lastWordEnabled).toBe(true); // NORMAL mode
+      expect(snapshot.roleDistribution).toMatchObject({
+        mafia: 1,
+        don: 0,
+        detective: 0,
+        sheriff: 0,
+        doctor: 1,
+        bodyguard: 0,
+        maniac: 0,
+        journalist: 0,
+        civilian: 2,
+      });
+      expect(snapshot.phaseDurationsSec).toMatchObject({
+        ROLE_REVEAL: 15,
+        NIGHT: 45,
+        MORNING: 15,
+        LAST_WORD: 20,
+      });
+
+      const players = await prisma.gamePlayer.findMany({
+        where: { gameId: room.gameId },
+      });
+      expect(players).toHaveLength(4);
+      expect(players.every((p) => p.lifeStatus === 'ALIVE')).toBe(true);
+
+      const persistedRoom = await prisma.room.findUniqueOrThrow({
+        where: { id: room.roomId },
+      });
+      expect(persistedRoom.status).toBe('IN_PROGRESS');
+    });
+
+    it('computes FAST-mode durations and disables LAST_WORD', async () => {
+      const host = await makeUser();
+      const others = await Promise.all([makeUser(), makeUser(), makeUser()]);
+      const room = await createValidRoom(host.id, {
+        maxPlayers: 8,
+        rulesetMode: RulesetMode.FAST,
+      });
+
+      for (const other of others) {
+        await service.joinRoom({
+          userId: other.id,
+          code: room.code,
+          clientRequestId: randomUUID(),
+        });
+      }
+
+      await start(host.id, room.roomId);
+
+      const game = await prisma.game.findUniqueOrThrow({
+        where: { id: room.gameId },
+      });
+      const snapshot = game.configSnapshot as Record<string, unknown>;
+      expect(snapshot.lastWordEnabled).toBe(false);
+      expect(snapshot.phaseDurationsSec).toMatchObject({
+        ROLE_REVEAL: 10,
+        NIGHT: 30,
+        MORNING: 10,
+        LAST_WORD: null,
+      });
+    });
+
+    it('replays the stored response for a repeated clientRequestId', async () => {
+      const host = await makeUser();
+      const others = await Promise.all([makeUser(), makeUser(), makeUser()]);
+      const room = await createValidRoom(host.id, { maxPlayers: 6 });
+
+      for (const other of others) {
+        await service.joinRoom({
+          userId: other.id,
+          code: room.code,
+          clientRequestId: randomUUID(),
+        });
+      }
+
+      const clientRequestId = randomUUID();
+      const first = await service.startGame({
+        userId: host.id,
+        roomId: room.roomId,
+        clientRequestId,
+      });
+      const second = await service.startGame({
+        userId: host.id,
+        roomId: room.roomId,
+        clientRequestId,
+      });
+
+      expect(second).toEqual(first);
+    });
+
+    it('under real concurrent start attempts at the exact minimum player count, exactly one succeeds and the rest are cleanly rejected', async () => {
+      // A 2-attempt version of this race passed even with the FOR UPDATE
+      // lock deliberately removed during test development — same lesson as
+      // the join-capacity, leave, and host-transfer concurrency tests above:
+      // two independent connections don't reliably overlap. Higher
+      // contention (many concurrent start calls, each with a distinct
+      // clientRequestId so the idempotency path can't short-circuit the
+      // race) is what actually exercises the lock.
+      const ATTEMPT_COUNT = 10;
+      const host = await makeUser();
+      const others = await Promise.all([makeUser(), makeUser(), makeUser()]);
+      const room = await createValidRoom(host.id, { maxPlayers: 6 });
+
+      for (const other of others) {
+        await service.joinRoom({
+          userId: other.id,
+          code: room.code,
+          clientRequestId: randomUUID(),
+        });
+      }
+
+      const settled = await Promise.allSettled(
+        Array.from({ length: ATTEMPT_COUNT }, () => start(host.id, room.roomId)),
+      );
+
+      const fulfilled = settled.filter(
+        (r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof start>>> =>
+          r.status === 'fulfilled',
+      );
+      const rejected = settled.filter(
+        (r): r is PromiseRejectedResult => r.status === 'rejected',
+      );
+
+      expect(fulfilled).toHaveLength(1);
+      expect(fulfilled[0].value.status).toBe('RUNNING');
+      expect(rejected).toHaveLength(ATTEMPT_COUNT - 1);
+      expect(
+        rejected.every(
+          (r) =>
+            (r.reason as RoomException).code === RoomErrorCode.ROOM_NOT_IN_LOBBY,
+        ),
+      ).toBe(true);
+
+      const game = await prisma.game.findUniqueOrThrow({
+        where: { id: room.gameId },
+      });
+      expect(game.status).toBe('RUNNING');
+
+      const players = await prisma.gamePlayer.findMany({
+        where: { gameId: room.gameId },
+      });
+      expect(players.every((p) => p.lifeStatus === 'ALIVE')).toBe(true);
+      expect(players).toHaveLength(4);
+    });
+  });
 });
