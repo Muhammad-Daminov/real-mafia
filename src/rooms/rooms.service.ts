@@ -103,6 +103,29 @@ export interface HostTransferred {
   newHostPlayerId: string;
 }
 
+export interface ListPublicRoomsInput {
+  page: number;
+  limit: number;
+}
+
+/** OD-038: deliberately excludes creatorUserId and any host/user identity. */
+export interface PublicRoomSummary {
+  roomId: string;
+  code: string;
+  maxPlayers: number;
+  rulesetMode: RulesetMode;
+  playerCount: number;
+  createdAt: Date;
+}
+
+export interface PublicRoomsPage {
+  rooms: PublicRoomSummary[];
+  page: number;
+  limit: number;
+  totalCount: number;
+  totalPages: number;
+}
+
 @Injectable()
 export class RoomsService {
   constructor(
@@ -232,6 +255,71 @@ export class RoomsService {
       gameId: game.id,
       gameStatus: game.status,
       playerCount,
+    };
+  }
+
+  /**
+   * §8.2 / OD-038: the public room browser. Read-only — no idempotency, no
+   * row lock (§19's transactional boundary is for state-changing commands;
+   * there's nothing to serialize here). "Open with free slots" is
+   * `Room.status = OPEN AND Game.status = LOBBY AND playerCount < maxPlayers`,
+   * where playerCount excludes LEFT players per the OD-037 convention. Backed
+   * by the `(visibility, status, createdAt DESC)` index added in this slice's
+   * migration — the equality filter and the ORDER BY are both covered by one
+   * index scan, so only the (typically small) set of currently-open public
+   * rooms is ever aggregated/sorted, not the whole `rooms` table.
+   */
+  async listPublicRooms(input: ListPublicRoomsInput): Promise<PublicRoomsPage> {
+    const offset = (input.page - 1) * input.limit;
+
+    const [rows, totalRows] = await Promise.all([
+      this.prisma.$queryRaw<
+        {
+          roomId: string;
+          code: string;
+          maxPlayers: number;
+          rulesetMode: RulesetMode;
+          createdAt: Date;
+          playerCount: number;
+        }[]
+      >`
+        SELECT
+          r.id AS "roomId",
+          r.code AS "code",
+          r.max_players AS "maxPlayers",
+          r.ruleset_mode AS "rulesetMode",
+          r.created_at AS "createdAt",
+          COUNT(gp.id) FILTER (WHERE gp.life_status != 'LEFT')::int AS "playerCount"
+        FROM rooms r
+        JOIN games g ON g.id = r.active_game_id
+        LEFT JOIN game_players gp ON gp.game_id = g.id
+        WHERE r.visibility = 'PUBLIC' AND r.status = 'OPEN' AND g.status = 'LOBBY'
+        GROUP BY r.id, r.code, r.max_players, r.ruleset_mode, r.created_at
+        HAVING COUNT(gp.id) FILTER (WHERE gp.life_status != 'LEFT') < r.max_players
+        ORDER BY r.created_at DESC
+        LIMIT ${input.limit} OFFSET ${offset}
+      `,
+      this.prisma.$queryRaw<{ count: number }[]>`
+        SELECT COUNT(*)::int AS "count" FROM (
+          SELECT r.id
+          FROM rooms r
+          JOIN games g ON g.id = r.active_game_id
+          LEFT JOIN game_players gp ON gp.game_id = g.id
+          WHERE r.visibility = 'PUBLIC' AND r.status = 'OPEN' AND g.status = 'LOBBY'
+          GROUP BY r.id, r.max_players
+          HAVING COUNT(gp.id) FILTER (WHERE gp.life_status != 'LEFT') < r.max_players
+        ) open_public_rooms
+      `,
+    ]);
+
+    const totalCount = totalRows[0]?.count ?? 0;
+
+    return {
+      rooms: rows,
+      page: input.page,
+      limit: input.limit,
+      totalCount,
+      totalPages: Math.ceil(totalCount / input.limit),
     };
   }
 

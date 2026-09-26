@@ -137,6 +137,10 @@ model Room {
   createdAt     DateTime       @default(now()) @map("created_at")
 
   @@index([status, visibility])
+  /// §8.2/OD-038: GET /rooms/public filters on (visibility, status) and sorts
+  /// by createdAt DESC — this covers both the filter and the sort in one
+  /// index scan, avoiding a separate sort step over the matched rooms.
+  @@index([visibility, status, createdAt(sort: Desc)])
   @@map("rooms")
 }
 

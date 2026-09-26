@@ -187,6 +187,56 @@ All four new codes (`ROOM_NOT_IN_LOBBY`, `PLAYER_NOT_IN_GAME`, `NOT_HOST`,
 additions to §30.1/§32 and should be folded into the Master TZ at the next
 revision, same as OD-035/OD-036.
 
+### OD-038 — Public Room Browser: Pagination Shape, Ordering, Response Fields · RESOLVED
+Context: §8.2 states `GET /rooms/public` "lists open `PUBLIC` rooms with free
+slots — paginated, rate-limited, no private room ever listed," and §34's Redis
+table names a cache key `cache:rooms:public:page:{n}` (3s TTL, "read from
+PostgreSQL directly" if Redis is down) for it — but neither section states the
+query parameter names, default/max page size, sort order, or the exact
+per-room response fields. Same carry-forward-gap class as OD-035/036/037.
+
+Decision:
+- **Pagination is page-number based**, not cursor-based: `?page` (1-indexed,
+  default 1) and `?limit` (default 20, max 50). This isn't a free invention —
+  the `cache:rooms:public:page:{n}` key literally names a page number, which
+  only makes sense as a cache key for page-based (not cursor-based)
+  pagination, so the spec already implies the shape even though §30.1 doesn't
+  spell it out. The specific defaults (20/50) have no textual source and are
+  chosen as conventional, conservative values for a browse UI.
+- **"Open" resolves to `Room.status = OPEN` AND the active game's status is
+  `LOBBY`.** §8.5's lifecycle table maps `OPEN` to "no active game, or
+  DRAFT/LOBBY," but every room created via `POST /rooms` always has an active
+  game created directly in `LOBBY` (§15.1 — `DRAFT` is never reached), so in
+  practice this collapses to exactly `LOBBY`, consistent with OD-036's
+  join-time LOBBY check.
+- **"With free slots" is `playerCount < maxPlayers`**, using the established
+  LEFT-exclusion convention from OD-037 (a `LEFT` player doesn't hold a slot)
+  — same rule already applied to join's capacity check and leave's roster
+  count, applied here for consistency rather than re-litigated.
+- **Response fields per room**: `roomId`, `code`, `maxPlayers`, `rulesetMode`,
+  `playerCount`, `createdAt`. `code` is included because it's the only
+  existing mechanism to act on a listed room — `POST /rooms/:code/join`
+  is code-keyed, not id-keyed, and this slice doesn't add an id-based join
+  path — so a listing without it would be browsable but not actionable.
+  `creatorUserId` / any User-identifying field is deliberately excluded: no
+  spec text asks for it, and a public, browse-without-joining listing is not
+  the place to default to exposing another user's identity when nothing
+  requires it (§29.1's spirit — Room binding must not leak more than it has
+  to). Internal fields (`visibility`, `status` — always `PUBLIC`/`OPEN` by
+  construction of the query — `id` of the Game, host info) are omitted as
+  redundant or irrelevant to a pre-join decision.
+- **Default order is newest-first (`createdAt DESC`).** Not stated anywhere.
+  "Soonest-to-fill" (by live player count) was considered and rejected
+  because player count is a derived/computed value, not a stored, indexed
+  column — sorting by it would force computing and sorting every matching
+  room's count before paginating, defeating the "index-backed, not an
+  offset-scan" requirement this endpoint is held to. `createdAt` is an
+  indexed column that gives a stable, efficient sort.
+
+This decision (pagination shape, defaults, field list, ordering) is an
+addition to §8.2/§30.1 and should be folded into the Master TZ at the next
+revision, same as OD-035/036/037.
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
 None. Every previously blocking decision is resolved (see the addendum above).
@@ -215,6 +265,6 @@ None. Every previously blocking decision is resolved (see the addendum above).
   2026-09-25 addendum resolved them.)
 - OD-031–OD-034 are new in v6.0 (MASTER_TZ.md §42.2/§42.1) and non-blocking, each with a
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
-- Total: 27 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum + OD-037 recorded
-  2026-09-26), 0 open+blocking, 10 open+non-blocking (37 IDs, OD-001 through
-  OD-037).
+- Total: 28 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum + OD-037/OD-038
+  recorded 2026-09-26), 0 open+blocking, 10 open+non-blocking (38 IDs, OD-001
+  through OD-038).

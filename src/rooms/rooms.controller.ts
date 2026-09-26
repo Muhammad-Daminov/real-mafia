@@ -1,9 +1,19 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import type { RequestWithUser } from '../auth/types/authenticated-user';
 import { RoomsService } from './rooms.service';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { JoinRoomDto } from './dto/join-room.dto';
+import { ListPublicRoomsDto } from './dto/list-public-rooms.dto';
 import { LeaveRoomDto } from './dto/leave-room.dto';
 import { SetReadyDto } from './dto/set-ready.dto';
 import { TransferHostDto } from './dto/transfer-host.dto';
@@ -21,6 +31,17 @@ export class RoomsController {
       clientRequestId: dto.clientRequestId,
       maxPlayers: dto.maxPlayers,
       rulesetMode: dto.rulesetMode,
+    });
+  }
+
+  // Registered before `:code` — Nest/Express match routes in declaration
+  // order, and `:code` would otherwise greedily swallow the literal
+  // "public" segment as a room code.
+  @Get('public')
+  listPublic(@Query() query: ListPublicRoomsDto) {
+    return this.roomsService.listPublicRooms({
+      page: query.page,
+      limit: query.limit,
     });
   }
 

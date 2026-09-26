@@ -421,6 +421,151 @@ describe('RoomsService (integration)', () => {
     );
   });
 
+  describe('listPublicRooms', () => {
+    const makePublicRoom = async (
+      userId: string,
+      overrides: Partial<{ maxPlayers: number }> = {},
+    ) => {
+      const room = await createValidRoom(userId, {
+        maxPlayers: overrides.maxPlayers ?? 4,
+      });
+      await prisma.room.update({
+        where: { id: room.roomId },
+        data: { visibility: 'PUBLIC' },
+      });
+      return room;
+    };
+
+    it('returns an empty page when there are no open public rooms', async () => {
+      const page = await service.listPublicRooms({ page: 1, limit: 20 });
+
+      expect(page.rooms).toEqual([]);
+      expect(page.totalCount).toBe(0);
+      expect(page.totalPages).toBe(0);
+    });
+
+    it('lists open public rooms with free slots, newest first, on a single page', async () => {
+      const host = await makeUser();
+      const first = await makePublicRoom(host.id);
+      const second = await makePublicRoom(host.id);
+      const third = await makePublicRoom(host.id);
+
+      const page = await service.listPublicRooms({ page: 1, limit: 20 });
+
+      expect(page.totalCount).toBe(3);
+      expect(page.totalPages).toBe(1);
+      expect(page.rooms.map((r) => r.roomId)).toEqual([
+        third.roomId,
+        second.roomId,
+        first.roomId,
+      ]);
+      expect(page.rooms[0]).toMatchObject({
+        roomId: third.roomId,
+        code: third.code,
+        maxPlayers: third.maxPlayers,
+        rulesetMode: third.rulesetMode,
+        playerCount: 1,
+      });
+    });
+
+    it('never lists a PRIVATE room', async () => {
+      const host = await makeUser();
+      await createValidRoom(host.id); // PRIVATE by default — not made public
+
+      const page = await service.listPublicRooms({ page: 1, limit: 20 });
+
+      expect(page.rooms).toEqual([]);
+      expect(page.totalCount).toBe(0);
+    });
+
+    it('paginates correctly across multiple pages with no gaps or overlaps', async () => {
+      const host = await makeUser();
+      const rooms: Awaited<ReturnType<typeof makePublicRoom>>[] = [];
+      for (let i = 0; i < 5; i += 1) {
+        rooms.push(await makePublicRoom(host.id));
+      }
+      const expectedOrder = [...rooms].reverse().map((r) => r.roomId);
+
+      const page1 = await service.listPublicRooms({ page: 1, limit: 2 });
+      const page2 = await service.listPublicRooms({ page: 2, limit: 2 });
+      const page3 = await service.listPublicRooms({ page: 3, limit: 2 });
+
+      expect(page1.totalCount).toBe(5);
+      expect(page1.totalPages).toBe(3);
+      expect(page1.rooms.map((r) => r.roomId)).toEqual(expectedOrder.slice(0, 2));
+      expect(page2.rooms.map((r) => r.roomId)).toEqual(expectedOrder.slice(2, 4));
+      expect(page3.rooms.map((r) => r.roomId)).toEqual(expectedOrder.slice(4, 5));
+
+      const allIds = [...page1.rooms, ...page2.rooms, ...page3.rooms].map(
+        (r) => r.roomId,
+      );
+      expect(new Set(allIds).size).toBe(5);
+    });
+
+    it('excludes a room whose game has left LOBBY', async () => {
+      const host = await makeUser();
+      const running = await makePublicRoom(host.id);
+      await makePublicRoom(host.id);
+
+      await prisma.game.update({
+        where: { id: running.gameId },
+        data: { status: 'RUNNING' },
+      });
+
+      const page = await service.listPublicRooms({ page: 1, limit: 20 });
+
+      expect(page.totalCount).toBe(1);
+      expect(page.rooms.map((r) => r.roomId)).not.toContain(running.roomId);
+    });
+
+    it('excludes a room that has no free slots', async () => {
+      const host = await makeUser();
+      const full = await makePublicRoom(host.id, { maxPlayers: 4 });
+      const fillers = await Promise.all([makeUser(), makeUser(), makeUser()]);
+
+      for (const filler of fillers) {
+        await service.joinRoom({
+          userId: filler.id,
+          code: full.code,
+          clientRequestId: randomUUID(),
+        });
+      }
+
+      const page = await service.listPublicRooms({ page: 1, limit: 20 });
+
+      expect(page.rooms.map((r) => r.roomId)).not.toContain(full.roomId);
+    });
+
+    it('excludes LEFT players from the displayed playerCount, freeing the room back up', async () => {
+      const host = await makeUser();
+      const room = await makePublicRoom(host.id, { maxPlayers: 4 });
+      const fillers = await Promise.all([makeUser(), makeUser(), makeUser()]);
+
+      for (const filler of fillers) {
+        await service.joinRoom({
+          userId: filler.id,
+          code: room.code,
+          clientRequestId: randomUUID(),
+        });
+      }
+
+      // Room is now full (4/4) and should not be listed.
+      let page = await service.listPublicRooms({ page: 1, limit: 20 });
+      expect(page.rooms.map((r) => r.roomId)).not.toContain(room.roomId);
+
+      await service.leaveRoom({
+        userId: fillers[0].id,
+        roomId: room.roomId,
+        clientRequestId: randomUUID(),
+      });
+
+      page = await service.listPublicRooms({ page: 1, limit: 20 });
+      const listed = page.rooms.find((r) => r.roomId === room.roomId);
+      expect(listed).toBeDefined();
+      expect(listed!.playerCount).toBe(3);
+    });
+  });
+
   describe('leaveRoom', () => {
     const leave = (userId: string, roomId: string) =>
       service.leaveRoom({ userId, roomId, clientRequestId: randomUUID() });
