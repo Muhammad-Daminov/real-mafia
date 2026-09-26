@@ -3,8 +3,9 @@ import { PrismaModule } from './prisma/prisma.module';
 import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
 import { RoomsModule } from './rooms/rooms.module';
+import { GameEngineModule } from './game-engine/game-engine.module';
 
 @Module({
-  imports: [PrismaModule, UsersModule, AuthModule, RoomsModule],
+  imports: [PrismaModule, UsersModule, AuthModule, RoomsModule, GameEngineModule],
 })
 export class AppModule {}

@@ -103,6 +103,23 @@ enum ConnectionStatus {
   DISCONNECTED
 }
 
+/// §12.3's V1 role catalogue (9 roles). Team membership (§12.2) is a fixed,
+/// pure function of role code (src/game-engine/roles.ts) — not persisted here,
+/// since no RoleDefinition catalog table exists yet (deliberately deferred,
+/// see OD-041) and duplicating a value that never varies independently of
+/// roleCode would just be an update anomaly waiting to happen.
+enum RoleCode {
+  MAFIA
+  DON
+  DETECTIVE
+  SHERIFF
+  DOCTOR
+  BODYGUARD
+  MANIAC
+  JOURNALIST
+  CIVILIAN
+}
+
 /// Shareable container that replaces v5.0's TelegramGroup binding (§8).
 ///
 /// Never deleted (§33.1); a closed room's `code` is released by the janitor
@@ -173,6 +190,7 @@ model Game {
 
   players       GamePlayer[]  @relation("GamePlayers")
   phases        GamePhase[]
+  roleAssignments GameRoleAssignment[]
 
   createdAt     DateTime      @default(now()) @map("created_at")
   startedAt     DateTime?     @map("started_at")
@@ -207,10 +225,37 @@ model GamePlayer {
   joinedAt         DateTime         @default(now()) @map("joined_at")
 
   hostOf           Game?            @relation("GameHost")
+  roleAssignment   GameRoleAssignment?
 
   @@unique([gameId, userId])
   @@index([gameId, lifeStatus])
   @@map("game_players")
+}
+
+/// §12.1: "GameRoleAssignment (immutable per-player link)" — created once at
+/// StartGame (Slice 2 of that command, src/game-engine/), never updated or
+/// deleted by application code. `playerId` is `@unique`, not just indexed:
+/// a GamePlayer row is already scoped to exactly one game, so "at most one
+/// assignment per playerId" is precisely "exactly one role per seated player
+/// per game" — no separate (gameId, playerId) composite is needed to express
+/// that. `gameId` is kept as a denormalized column so role-assignment queries
+/// (e.g. "all assignments for this game") don't need to join through
+/// game_players just to filter.
+model GameRoleAssignment {
+  id        String     @id @default(uuid(7)) @db.Uuid
+
+  gameId    String     @map("game_id") @db.Uuid
+  game      Game       @relation(fields: [gameId], references: [id])
+
+  playerId  String     @unique @map("player_id") @db.Uuid
+  player    GamePlayer @relation(fields: [playerId], references: [id])
+
+  roleCode  RoleCode   @map("role_code")
+
+  createdAt DateTime   @default(now()) @map("created_at")
+
+  @@index([gameId])
+  @@map("game_role_assignments")
 }
 
 /// §19: `game_phases.ends_at` is the sole authority for phase deadlines.

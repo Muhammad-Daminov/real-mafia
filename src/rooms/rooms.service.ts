@@ -10,6 +10,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CommandRequestService } from '../common/command-requests/command-request.service';
+import { RoleAssignmentService } from '../game-engine/role-assignment.service';
 import { RoomErrorCode, RoomException } from './rooms.errors';
 import {
   computePhaseDurationsSec,
@@ -174,6 +175,7 @@ export class RoomsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly commandRequests: CommandRequestService,
+    private readonly roleAssignment: RoleAssignmentService,
   ) {}
 
   /**
@@ -942,6 +944,15 @@ export class RoomsService {
       await tx.gamePlayer.updateMany({
         where: { id: { in: activePlayers.map((p) => p.id) } },
         data: { lifeStatus: LifeStatus.ALIVE },
+      });
+
+      // OD-041: role assignment is the Game Engine's write (§10.3), performed
+      // here — inside this same transaction/lock — so a game can never end up
+      // RUNNING without roles dealt (no separate step, no undealt window).
+      await this.roleAssignment.dealRoles(tx, {
+        gameId,
+        activePlayerIds: activePlayers.map((p) => p.id),
+        roleDistribution,
       });
 
       await tx.game.update({

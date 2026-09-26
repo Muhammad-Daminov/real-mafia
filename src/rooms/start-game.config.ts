@@ -1,21 +1,16 @@
 import { RulesetMode } from '@prisma/client';
+import type { RoleDistribution } from '../game-engine/roles';
 
 /**
  * Master TZ §13.1's fixed distribution table, `rulesVersion` "6.0.0".
  * Verbatim from the spec — never edit in place; a table change requires a new
  * `rulesVersion` per §13.2/§14.3's immutability rule.
+ *
+ * `RoleDistribution`'s canonical definition lives in `game-engine/roles.ts`
+ * (OD-041) — game-engine is the domain layer and must not import from rooms,
+ * so rooms imports the type from game-engine, not the other way around.
  */
-export interface RoleDistribution {
-  mafia: number;
-  don: number;
-  detective: number;
-  sheriff: number;
-  doctor: number;
-  bodyguard: number;
-  maniac: number;
-  journalist: number;
-  civilian: number;
-}
+export type { RoleDistribution };
 
 export const RULES_VERSION = '6.0.0';
 

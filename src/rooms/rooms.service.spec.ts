@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { RoomVisibility, RulesetMode } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CommandRequestService } from '../common/command-requests/command-request.service';
+import { RoleAssignmentService } from '../game-engine/role-assignment.service';
 import { RoomsService } from './rooms.service';
 import { RoomErrorCode, RoomException } from './rooms.errors';
 
@@ -15,7 +16,8 @@ import { RoomErrorCode, RoomException } from './rooms.errors';
 describe('RoomsService (integration)', () => {
   const prisma = new PrismaService();
   const commandRequests = new CommandRequestService();
-  const service = new RoomsService(prisma, commandRequests);
+  const roleAssignment = new RoleAssignmentService();
+  const service = new RoomsService(prisma, commandRequests, roleAssignment);
 
   const TEST_TELEGRAM_PREFIX = 'rooms-test-';
   let createdUserIds: string[] = [];
@@ -53,6 +55,9 @@ describe('RoomsService (integration)', () => {
 
   afterEach(async () => {
     if (createdRoomIds.length) {
+      await prisma.gameRoleAssignment.deleteMany({
+        where: { game: { roomId: { in: createdRoomIds } } },
+      });
       await prisma.gamePlayer.deleteMany({
         where: { game: { roomId: { in: createdRoomIds } } },
       });
@@ -1362,7 +1367,87 @@ describe('RoomsService (integration)', () => {
         where: { id: room.roomId },
       });
       expect(persistedRoom.status).toBe('IN_PROGRESS');
+
+      // Slice 2: roles are dealt atomically with the same transition.
+      const assignments = await prisma.gameRoleAssignment.findMany({
+        where: { gameId: room.gameId },
+      });
+      expect(assignments).toHaveLength(4);
+      expect(new Set(assignments.map((a) => a.playerId)).size).toBe(4);
+      expect(assignments.map((a) => a.playerId).sort()).toEqual(
+        players.map((p) => p.id).sort(),
+      );
+      expect(assignments.map((a) => a.roleCode).sort()).toEqual(
+        ['CIVILIAN', 'CIVILIAN', 'DOCTOR', 'MAFIA'].sort(),
+      );
     });
+
+    it.each([4, 8, 24])(
+      'deals exactly one role per player for a %i-player game, multiset matching configSnapshot.roleDistribution exactly',
+      async (playerCount) => {
+        const host = await makeUser();
+        const others = await Promise.all(
+          Array.from({ length: playerCount - 1 }, () => makeUser()),
+        );
+        const room = await createValidRoom(host.id, { maxPlayers: 24 });
+
+        for (const other of others) {
+          await service.joinRoom({
+            userId: other.id,
+            code: room.code,
+            clientRequestId: randomUUID(),
+          });
+        }
+
+        await start(host.id, room.roomId);
+
+        const game = await prisma.game.findUniqueOrThrow({
+          where: { id: room.gameId },
+        });
+        const roleDistribution = (game.configSnapshot as Record<string, unknown>)
+          .roleDistribution as Record<string, number>;
+
+        const players = await prisma.gamePlayer.findMany({
+          where: { gameId: room.gameId },
+        });
+        const assignments = await prisma.gameRoleAssignment.findMany({
+          where: { gameId: room.gameId },
+        });
+
+        // Uniqueness: every seated player has exactly one role, no omissions,
+        // no duplicates.
+        expect(assignments).toHaveLength(playerCount);
+        expect(new Set(assignments.map((a) => a.playerId)).size).toBe(
+          playerCount,
+        );
+        expect(assignments.map((a) => a.playerId).sort()).toEqual(
+          players.map((p) => p.id).sort(),
+        );
+
+        // Distribution correctness: the dealt multiset matches the frozen
+        // configSnapshot.roleDistribution exactly, per-role.
+        const dealtCounts: Record<string, number> = {};
+        for (const a of assignments) {
+          dealtCounts[a.roleCode] = (dealtCounts[a.roleCode] ?? 0) + 1;
+        }
+
+        const roleKeyToCode: Record<string, string> = {
+          mafia: 'MAFIA',
+          don: 'DON',
+          detective: 'DETECTIVE',
+          sheriff: 'SHERIFF',
+          doctor: 'DOCTOR',
+          bodyguard: 'BODYGUARD',
+          maniac: 'MANIAC',
+          journalist: 'JOURNALIST',
+          civilian: 'CIVILIAN',
+        };
+
+        for (const [key, code] of Object.entries(roleKeyToCode)) {
+          expect(dealtCounts[code] ?? 0).toBe(roleDistribution[key]);
+        }
+      },
+    );
 
     it('computes FAST-mode durations and disables LAST_WORD', async () => {
       const host = await makeUser();
@@ -1476,6 +1561,19 @@ describe('RoomsService (integration)', () => {
       });
       expect(players.every((p) => p.lifeStatus === 'ALIVE')).toBe(true);
       expect(players).toHaveLength(4);
+
+      // Slice 2's atomicity guarantee: a game can never end up RUNNING
+      // without roles dealt, even under this many concurrent start attempts
+      // racing on the same lock — exactly one full deal, never zero, never
+      // partial, never duplicated.
+      const assignments = await prisma.gameRoleAssignment.findMany({
+        where: { gameId: room.gameId },
+      });
+      expect(assignments).toHaveLength(4);
+      expect(new Set(assignments.map((a) => a.playerId)).size).toBe(4);
+      expect(assignments.map((a) => a.playerId).sort()).toEqual(
+        players.map((p) => p.id).sort(),
+      );
     });
   });
 });

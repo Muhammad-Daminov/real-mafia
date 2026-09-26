@@ -342,6 +342,89 @@ Decision:
 This is an addition to §30.1/§32 and should be folded into the Master TZ at
 the next revision, same as OD-035–039.
 
+### OD-041 — StartGame Slice 2: Role Assignment Ownership, Atomicity, Persistence, Randomness, Visibility · RESOLVED
+Context: §12.1 names the mechanism ("`RoleDefinition` (catalog) +
+`GameRoleAssignment` (immutable per-player link) + `RoleBehavior` (strategy
+object)") and §10.3 states "only the Game Engine may write ...role
+assignments," but nothing in §10-§14 specifies *when within the StartGame
+command* dealing happens, what the persisted shape looks like beyond the
+mechanism's name, what randomness primitive to use, or how a player later
+reads their own role. Five sub-decisions, resolved together:
+
+1. **Module ownership: `src/game-engine/`, not `src/rooms/`.** This one isn't
+   actually open — CLAUDE.md already states it explicitly ("`game-engine` (the
+   domain layer: role assignment, action validation, night/vote resolution,
+   win evaluator)"), and `game-engine.module.ts`'s own docstring already names
+   role assignment as its reason to exist. `RoomsService` continues to own the
+   `POST /rooms/:id/start` endpoint, its transaction, and its `FOR UPDATE`
+   lock (that's lobby orchestration — who can start, is it LOBBY, etc.); it
+   calls a new `RoleAssignmentService` (in `game-engine`) *from inside* that
+   already-open transaction to perform the actual role-assignment writes.
+   `rooms -> game-engine` is not a boundary violation — I-33's rule (enforced
+   by `.dependency-cruiser.cjs`) is one-directional: `game-engine` must never
+   import `economy`/`store`/`payments`/`referral`, and they must never import
+   it back. It says nothing about `rooms -> game-engine`, and the reverse
+   direction (`game-engine` importing anything from `rooms`) is avoided here:
+   `RoleAssignmentService.dealRoles` takes a plain `{ gameId, activePlayerIds,
+   roleDistribution }` and a transaction client, never a `Room`/`CreatedRoom`
+   type — `game-engine` has zero knowledge of the rooms module existing.
+   **Pre-existing, out-of-scope note**: §10.3 also names `games.status`/
+   `current_phase`/`round`/`game_players.life_status` as Game-Engine-only
+   writes, but Slice 1 (already committed, ed21194) writes those directly
+   from `RoomsService` — a real, narrow §10.3 mismatch, but refactoring
+   already-shipped Slice 1 code is a drive-by change this decision does not
+   make. Flagged as a known gap, not fixed here.
+2. **Dealing is atomic with Slice 1's transaction — folded into the same
+   `startGameTransaction`, same `FOR UPDATE` lock, not a separate step.**
+   §6.3's architectural principle ("every state-changing command executes
+   inside one transaction holding a row lock on the Room/Game") frames
+   StartGame as one command; a `RUNNING` game with no dealt roles would be an
+   invalid, spec-unaccounted-for intermediate state with no defined recovery
+   path. Rather than introduce one, this decision eliminates the window: role
+   assignment happens inside Slice 1's existing transaction, before commit.
+   If dealing fails for any reason, the whole `StartGame` call fails and the
+   game stays in `LOBBY` — same all-or-nothing guarantee as every other
+   command in this module.
+3. **Persistence: a new `GameRoleAssignment` table, not a field on
+   `GamePlayer`.** §12.1 names it as its own artifact ("immutable per-player
+   link"), which a dedicated insert-only table expresses more faithfully than
+   a mutable column on an already-mutable `GamePlayer` row. `playerId` is
+   `@unique` (not part of a composite key) — a `GamePlayer` row already scopes
+   to exactly one game, so "at most one assignment per playerId" already
+   means "exactly one role per seated player per game." **No `RoleDefinition`
+   catalog table is added this slice** — the 9 roles and their team
+   membership are a fixed, code-level mapping (`src/game-engine/roles.ts`),
+   same treatment as §13.1's distribution table in Slice 1. A DB-editable
+   catalog is Phase 16 (SuperAdmin content) work, not a Phase 4/5 lobby-to-
+   game-start concern; adding one now would be speculative infrastructure for
+   a requirement that doesn't exist yet. `RoleBehavior` (the strategy object)
+   is explicitly code, not data, per §12.1's own wording — not persisted at
+   all, and irrelevant to dealing (it's night-action resolution, Phase 6).
+4. **Randomness: Fisher-Yates shuffle using `crypto.randomInt`**, the same
+   primitive already used for room-code generation earlier in this project.
+   `randomInt(i + 1)` at each step of the standard backward Fisher-Yates walk
+   returns a uniform integer in `[0, i]` inclusive — Node's `crypto.randomInt`
+   is documented to reject and retry outside the unbiased range internally
+   rather than using a modulo reduction, so unlike `Math.random() * n | 0`
+   there is no small-range bias toward low indices. Fisher-Yates itself is the
+   standard unbiased shuffle: each of the `n!` permutations of the role list
+   is equally likely, which is what "no mechanism that lets any party bias
+   outcomes" requires here — nobody, including the server operator, gets a
+   lever to prefer one player for one role.
+5. **No role-visibility read endpoint in this slice.** §20 (Realtime,
+   unchanged from v5.0) already defines the delivery mechanism for a player's
+   own role: a private WebSocket event on the `game:{gameId}:player:{playerId}`
+   channel — not a REST read. This codebase has no WebSocket/realtime layer
+   at all yet (no gateway module exists anywhere in `src/`), so building a
+   REST "get my role" endpoint now would invent a delivery mechanism the spec
+   doesn't call for at this phase, ahead of the realtime slice that's
+   supposed to own it. This slice guarantees the data exists and is
+   queryable (`GameRoleAssignment`, one row per player) — exposing it is
+   explicitly the realtime/WebSocket slice's job, not built here.
+
+This is an addition to §10.2/§12.1/§30 and should be folded into the Master TZ
+at the next revision, same as OD-035–040.
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
 None. Every previously blocking decision is resolved (see the addendum above).
@@ -370,6 +453,6 @@ None. Every previously blocking decision is resolved (see the addendum above).
   2026-09-25 addendum resolved them.)
 - OD-031–OD-034 are new in v6.0 (MASTER_TZ.md §42.2/§42.1) and non-blocking, each with a
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
-- Total: 30 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
-  OD-037/OD-038/OD-039/OD-040 recorded 2026-09-26), 0 open+blocking, 10
-  open+non-blocking (40 IDs, OD-001 through OD-040).
+- Total: 31 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
+  OD-037/OD-038/OD-039/OD-040/OD-041 recorded 2026-09-26), 0 open+blocking, 10
+  open+non-blocking (41 IDs, OD-001 through OD-041).
