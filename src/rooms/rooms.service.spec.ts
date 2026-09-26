@@ -1206,6 +1206,44 @@ describe('RoomsService (integration)', () => {
       });
     });
 
+    it('rejects CONFIG_INVALID when the seated count has no §13.1 row (forced via a direct DB seam — unreachable through the real API)', async () => {
+      // §13.1's table covers exactly 4-24, and every reachable seated count
+      // is already bounded to that range by NOT_ENOUGH_PLAYERS (>= 4) and by
+      // join's capacity check (<= room.maxPlayers <= 24, enforced since the
+      // create/join slice). So this condition can never actually fire through
+      // POST /rooms/:id/start today — it's defense-in-depth, not a live gap.
+      // To exercise the rejection path itself, seed player rows directly
+      // (bypassing join's capacity check entirely) to push the seated count
+      // to 25, one past the table's ceiling.
+      const host = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 24 });
+      const extraUsers = await Promise.all(
+        Array.from({ length: 24 }, () => makeUser()),
+      );
+
+      await prisma.gamePlayer.createMany({
+        data: extraUsers.map((u) => ({
+          gameId: room.gameId,
+          userId: u.id,
+          lifeStatus: 'WAITING',
+        })),
+      });
+
+      const seatedCount = await prisma.gamePlayer.count({
+        where: { gameId: room.gameId, lifeStatus: { not: 'LEFT' } },
+      });
+      expect(seatedCount).toBe(25); // host + 24 seeded — one past the table's ceiling
+
+      await expect(start(host.id, room.roomId)).rejects.toMatchObject({
+        code: RoomErrorCode.CONFIG_INVALID,
+      });
+
+      const game = await prisma.game.findUniqueOrThrow({
+        where: { id: room.gameId },
+      });
+      expect(game.status).toBe('LOBBY'); // rejected before any transition
+    });
+
     it('does NOT require all players to be ready (OD-014 — display-only)', async () => {
       const host = await makeUser();
       const others = await Promise.all([makeUser(), makeUser(), makeUser()]);
