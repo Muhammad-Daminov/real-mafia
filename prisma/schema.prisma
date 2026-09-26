@@ -35,6 +35,7 @@ model User {
   createdRooms Room[]       @relation("RoomCreator")
   gamePlayers  GamePlayer[] @relation("GamePlayerUser")
   launchTokens GameLaunchToken[] @relation("LaunchTokenConsumer")
+  commandRequests CommandRequest[]
 }
 // ---------------------------------------------------------------------------
 // Phase 2 — Room / Game aggregate (Master TZ §8, §9, §10, §11, §33)
@@ -266,4 +267,34 @@ model GameLaunchToken {
 
   @@index([expiresAt])
   @@map("game_launch_tokens")
+}
+
+/// Idempotency store for state-changing commands (Master TZ §19, v5.0 §23's
+/// `command_requests` mechanism). Minimal slice: covers exactly what
+/// `POST /rooms` and `POST /rooms/:code/join` need — the full outbox/
+/// event-sequence machinery is later phases.
+///
+/// A (userId, endpoint, clientRequestId) triple identifies one command
+/// attempt. Only a successful attempt's response is stored; a retry with the
+/// same triple replays it instead of re-executing. A failed attempt is not
+/// cached, so a genuine validation error doesn't permanently pin that id.
+model CommandRequest {
+  id              String   @id @default(uuid(7)) @db.Uuid
+
+  userId          String   @map("user_id") @db.Uuid
+  user            User     @relation(fields: [userId], references: [id])
+
+  /// Distinguishes command types sharing the same clientRequestId space,
+  /// e.g. "POST /rooms" vs "POST /rooms/:code/join".
+  endpoint        String
+
+  clientRequestId String   @map("client_request_id")
+
+  responseStatus  Int      @map("response_status")
+  responseBody    Json     @map("response_body")
+
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, endpoint, clientRequestId])
+  @@map("command_requests")
 }

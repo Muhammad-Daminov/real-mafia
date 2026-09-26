@@ -94,6 +94,20 @@ expired, get a fresh one" from a hard failure; tokens are opaque 256-bit
 randoms, so there is no practical oracle to exploit. These codes are an
 addition to §32 and should be folded into the Master TZ at the next revision.
 
+### OD-036 — Join-Time "Game No Longer Joinable" Error Code · RESOLVED
+Decision: `POST /rooms/:code/join` rejects with `GAME_NOT_JOINABLE` (409,
+non-retryable) when the resolved game's status is anything other than
+`LOBBY` (already `RUNNING`, `PAUSED`, `FINISHED`, or `CANCELLED`).
+Rationale: §15.2 specifies "same validation order and codes as v5.0 §15.2"
+including a status=LOBBY check, but that v5.0 code isn't reproduced in §32's
+error table (same carry-forward-gap class as OD-035's launch-token codes and
+the `POST /auth/telegram` rate limit). `GAME_NOT_JOINABLE` is chosen over
+reusing `ROOM_NOT_FOUND` because the room and its code both still exist and
+are valid — only this particular game has moved past the joinable window —
+and a client needs to tell "wrong/expired code" apart from "you're too late
+for this one" to render a sensible message. This code is an addition to §32
+and should be folded into the Master TZ at the next revision.
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
 None. Every previously blocking decision is resolved (see the addendum above).
@@ -122,5 +136,5 @@ None. Every previously blocking decision is resolved (see the addendum above).
   2026-09-25 addendum resolved them.)
 - OD-031–OD-034 are new in v6.0 (MASTER_TZ.md §42.2/§42.1) and non-blocking, each with a
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
-- Total: 25 resolved (17 in v6.0 + 8 by the 2026-09-25 addendum), 0 open+blocking,
-  10 open+non-blocking (35 IDs, OD-001 through OD-035).
+- Total: 26 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum), 0 open+blocking,
+  10 open+non-blocking (36 IDs, OD-001 through OD-036).
