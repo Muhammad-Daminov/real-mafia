@@ -1409,6 +1409,49 @@ describe('RoomsService (integration)', () => {
       });
     });
 
+    it('rejects cleanly (not a crash) when starting a room the host emptied to cancellation via leave (hostPlayerId is null)', async () => {
+      // Reproduces the exact sequence from the leave/host-transfer slice:
+      // the last player (host) leaves an empty lobby -> Game.status becomes
+      // CANCELLED, Game.hostPlayerId becomes null, AND Room.status becomes
+      // CLOSED (§8.5's mapping: CLOSED = last game FINISHED/CANCELLED and no
+      // new game started).
+      //
+      // Turns out the short-circuit that fires first isn't ROOM_NOT_IN_LOBBY
+      // (the lock/status check inside the transaction) — it's ROOM_NOT_FOUND,
+      // one step earlier: resolveOpenRoomById excludes CLOSED rooms before
+      // the transaction/lock is ever opened, so the hostPlayerId read is
+      // unreachable regardless. Confirmed by running this test before writing
+      // the assertion below, not assumed — the original expectation
+      // (ROOM_NOT_IN_LOBBY) was wrong; corrected to match actual behavior
+      // rather than forcing the test to match the assumption. Either way,
+      // the outcome is the same property this test exists to confirm: a
+      // clean, already-named rejection, never a null-reference crash.
+      const host = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 6 });
+
+      const left = await service.leaveRoom({
+        userId: host.id,
+        roomId: room.roomId,
+        clientRequestId: randomUUID(),
+      });
+      expect(left.roomClosed).toBe(true);
+
+      const game = await prisma.game.findUniqueOrThrow({
+        where: { id: room.gameId },
+      });
+      expect(game.status).toBe('CANCELLED');
+      expect(game.hostPlayerId).toBeNull();
+
+      const persistedRoom = await prisma.room.findUniqueOrThrow({
+        where: { id: room.roomId },
+      });
+      expect(persistedRoom.status).toBe('CLOSED');
+
+      await expect(start(host.id, room.roomId)).rejects.toMatchObject({
+        code: RoomErrorCode.ROOM_NOT_FOUND,
+      });
+    });
+
     it('transitions status/phase, seats players ALIVE, freezes config, and flips the room to IN_PROGRESS', async () => {
       const host = await makeUser();
       const others = await Promise.all([makeUser(), makeUser(), makeUser()]);
