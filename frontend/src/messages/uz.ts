@@ -27,8 +27,6 @@ export const uz = {
     notReady: 'Tayyor emas',
     readyButton: 'Tayyorman',
     notReadyButton: 'Tayyor emasman',
-    otherPlayers: (count: number) => `Yana ${count} ta o‘yinchi`,
-    noOtherPlayers: 'Boshqa o‘yinchi yo‘q',
     leaveButton: 'Xonadan chiqish',
     leaving: 'Chiqilmoqda…',
     startButton: 'O‘yinni boshlash',
@@ -39,6 +37,8 @@ export const uz = {
     startReasonNotInLobby: 'Xona hozir lobbi holatida emas',
     disconnectedBanner: 'Aloqa uzildi — qayta ulanmoqda…',
     reconnectedRefreshing: 'Qayta ulandi — holat yangilanmoqda…',
+    loadingRoster: 'Ro‘yxat yuklanmoqda…',
+    removedNotice: 'Siz bu xonada emassiz — ehtimol chiqarilgansiz yoki xona yopilgan.',
   },
   started: {
     title: 'O‘yin boshlandi',

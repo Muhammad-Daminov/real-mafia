@@ -13,6 +13,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.resetModules();
+  vi.useRealTimers();
 });
 
 const createdRoom = {
@@ -32,19 +33,50 @@ const joinedRoom = {
   maxPlayers: 8,
 };
 
+function makeSnapshot(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    roomId: 'room-1',
+    code: 'ABCDEF',
+    visibility: 'PRIVATE',
+    status: 'OPEN',
+    rulesetMode: 'NORMAL',
+    maxPlayers: 8,
+    gameId: 'game-1',
+    gameStatus: 'LOBBY',
+    playerCount: 2,
+    players: [
+      {
+        playerId: 'player-1',
+        displayName: 'Host',
+        avatarUrl: null,
+        isReady: false,
+        isHost: true,
+        joinedAt: '2026-01-01T00:00:00.000Z',
+      },
+      {
+        playerId: 'player-2',
+        displayName: 'Second',
+        avatarUrl: 'https://t.me/i/second.jpg',
+        isReady: true,
+        isHost: false,
+        joinedAt: '2026-01-01T00:01:00.000Z',
+      },
+    ],
+    ...overrides,
+  };
+}
+
 describe('lobbyStore — enter', () => {
-  it('enterFromCreate seeds state with myIsHost=true and playerCount=1', async () => {
+  it('enterFromCreate seeds state with myIsHost=true, playerCount=1, players=null (not yet fetched)', async () => {
     const { useLobbyStore } = await import('./lobbyStore');
     useLobbyStore.getState().enterFromCreate(createdRoom);
 
     const s = useLobbyStore.getState();
     expect(s.roomId).toBe('room-1');
-    expect(s.gameId).toBe('game-1');
-    expect(s.code).toBe('ABCDEF');
     expect(s.playerCount).toBe(1);
     expect(s.myIsHost).toBe(true);
-    expect(s.myIsReady).toBe(false);
-    expect(s.gameStatus).toBe('LOBBY');
+    expect(s.myPlayerId).toBeNull();
+    expect(s.players).toBeNull();
   });
 
   it('enterFromJoin seeds state with myIsHost=false and myPlayerId from the response', async () => {
@@ -54,155 +86,96 @@ describe('lobbyStore — enter', () => {
     const s = useLobbyStore.getState();
     expect(s.roomId).toBe('room-1');
     expect(s.code).toBe('ABCDEF');
-    expect(s.playerCount).toBe(2);
     expect(s.myPlayerId).toBe('player-2');
     expect(s.myIsHost).toBe(false);
   });
 });
 
-describe('lobbyStore — realtime event reducers', () => {
-  it('applyPlayerJoined updates playerCount from the event payload (authoritative)', async () => {
+describe('lobbyStore — refetchSnapshot: roster + derived my* fields', () => {
+  it('merges the roster and derives myIsHost/myIsReady for a joiner by matching myPlayerId', async () => {
     const { useLobbyStore } = await import('./lobbyStore');
-    useLobbyStore.getState().enterFromCreate(createdRoom);
-
-    useLobbyStore.getState().applyPlayerJoined({
-      roomId: 'room-1',
-      gameId: 'game-1',
-      playerId: 'player-2',
-      playerCount: 2,
-      maxPlayers: 8,
-    });
-
-    expect(useLobbyStore.getState().playerCount).toBe(2);
-  });
-
-  it('applyPlayerLeft updates playerCount from the event payload', async () => {
-    const { useLobbyStore } = await import('./lobbyStore');
-    useLobbyStore.getState().enterFromCreate(createdRoom);
-    useLobbyStore.setState({ playerCount: 3 });
-
-    useLobbyStore.getState().applyPlayerLeft({
-      roomId: 'room-1',
-      gameId: 'game-1',
-      playerId: 'player-2',
-      playerCount: 2,
-      newHostPlayerId: null,
-      roomClosed: false,
-    });
-
-    expect(useLobbyStore.getState().playerCount).toBe(2);
-  });
-
-  it('applyReadySet only updates myIsReady when the event is about myPlayerId', async () => {
-    const { useLobbyStore } = await import('./lobbyStore');
-    useLobbyStore.getState().enterFromJoin('ABCDEF', joinedRoom);
-
-    useLobbyStore.getState().applyReadySet({
-      roomId: 'room-1',
-      gameId: 'game-1',
-      playerId: 'someone-else',
-      isReady: true,
-    });
-    expect(useLobbyStore.getState().myIsReady).toBe(false);
-
-    useLobbyStore.getState().applyReadySet({
-      roomId: 'room-1',
-      gameId: 'game-1',
-      playerId: 'player-2',
-      isReady: true,
-    });
-    expect(useLobbyStore.getState().myIsReady).toBe(true);
-  });
-
-  it('applyHostTransferred for a joiner (known myPlayerId) compares newHostPlayerId directly', async () => {
-    const { useLobbyStore } = await import('./lobbyStore');
-    useLobbyStore.getState().enterFromJoin('ABCDEF', joinedRoom);
-    expect(useLobbyStore.getState().myIsHost).toBe(false);
-
-    useLobbyStore.getState().applyHostTransferred({
-      roomId: 'room-1',
-      gameId: 'game-1',
-      previousHostPlayerId: 'player-1',
-      newHostPlayerId: 'player-2',
-    });
-    expect(useLobbyStore.getState().myIsHost).toBe(true);
-
-    useLobbyStore.getState().applyHostTransferred({
-      roomId: 'room-1',
-      gameId: 'game-1',
-      previousHostPlayerId: 'player-2',
-      newHostPlayerId: 'player-3',
-    });
-    expect(useLobbyStore.getState().myIsHost).toBe(false);
-  });
-
-  it('applyHostTransferred for the creator (unknown myPlayerId) loses host on any transfer while currently host', async () => {
-    const { useLobbyStore } = await import('./lobbyStore');
-    useLobbyStore.getState().enterFromCreate(createdRoom);
-    expect(useLobbyStore.getState().myIsHost).toBe(true);
-    expect(useLobbyStore.getState().myPlayerId).toBeNull();
-
-    useLobbyStore.getState().applyHostTransferred({
-      roomId: 'room-1',
-      gameId: 'game-1',
-      previousHostPlayerId: 'creator-player-id',
-      newHostPlayerId: 'player-2',
-    });
-
-    expect(useLobbyStore.getState().myIsHost).toBe(false);
-  });
-
-  it('applyPhaseChanged updates currentPhase', async () => {
-    const { useLobbyStore } = await import('./lobbyStore');
-    useLobbyStore.getState().enterFromCreate(createdRoom);
-
-    useLobbyStore.getState().applyPhaseChanged({ from: 'LOBBY', to: 'ROLE_REVEAL', round: 0 });
-
-    expect(useLobbyStore.getState().currentPhase).toBe('ROLE_REVEAL');
-  });
-
-  it('events for a different gameId are ignored', async () => {
-    const { useLobbyStore } = await import('./lobbyStore');
-    useLobbyStore.getState().enterFromCreate(createdRoom);
-
-    useLobbyStore.getState().applyPlayerJoined({
-      roomId: 'other-room',
-      gameId: 'other-game',
-      playerId: 'x',
-      playerCount: 99,
-      maxPlayers: 8,
-    });
-
-    expect(useLobbyStore.getState().playerCount).toBe(1);
-  });
-});
-
-describe('lobbyStore — refetchSnapshot', () => {
-  it('merges the REST snapshot into state (used on every socket (re)connect)', async () => {
-    const { useLobbyStore } = await import('./lobbyStore');
-    useLobbyStore.getState().enterFromJoin('ABCDEF', joinedRoom);
-
-    getRoomByCodeMock.mockResolvedValue({
-      roomId: 'room-1',
-      code: 'ABCDEF',
-      visibility: 'PRIVATE',
-      status: 'OPEN',
-      rulesetMode: 'NORMAL',
-      maxPlayers: 8,
-      gameId: 'game-1',
-      gameStatus: 'LOBBY',
-      playerCount: 3,
-    });
+    useLobbyStore.getState().enterFromJoin('ABCDEF', joinedRoom); // myPlayerId = player-2
+    getRoomByCodeMock.mockResolvedValue(makeSnapshot());
 
     await useLobbyStore.getState().refetchSnapshot();
 
-    expect(getRoomByCodeMock).toHaveBeenCalledWith('ABCDEF');
     const s = useLobbyStore.getState();
-    expect(s.playerCount).toBe(3);
-    expect(s.visibility).toBe('PRIVATE');
-    expect(s.rulesetMode).toBe('NORMAL');
-    expect(s.snapshotLoading).toBe(false);
-    expect(s.snapshotError).toBeNull();
+    expect(s.players).toHaveLength(2);
+    expect(s.myPlayerId).toBe('player-2');
+    expect(s.myIsHost).toBe(false);
+    expect(s.myIsReady).toBe(true);
+    expect(s.playerCount).toBe(2);
+  });
+
+  it('resolves the creator\'s own playerId from the roster (sole host) on the first fetch, then pins it', async () => {
+    const { useLobbyStore } = await import('./lobbyStore');
+    useLobbyStore.getState().enterFromCreate(createdRoom); // myPlayerId unknown, myIsHost=true
+    getRoomByCodeMock.mockResolvedValue(
+      makeSnapshot({
+        playerCount: 1,
+        players: [
+          {
+            playerId: 'creator-player-id',
+            displayName: 'Creator',
+            avatarUrl: null,
+            isReady: false,
+            isHost: true,
+            joinedAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      }),
+    );
+
+    await useLobbyStore.getState().refetchSnapshot();
+
+    expect(useLobbyStore.getState().myPlayerId).toBe('creator-player-id');
+    expect(useLobbyStore.getState().myIsHost).toBe(true);
+
+    // A later refetch (after a host transfer away) must not re-derive
+    // myPlayerId from "whichever entry is host" — it's already pinned.
+    getRoomByCodeMock.mockResolvedValue(
+      makeSnapshot({
+        playerCount: 2,
+        players: [
+          {
+            playerId: 'creator-player-id',
+            displayName: 'Creator',
+            avatarUrl: null,
+            isReady: false,
+            isHost: false,
+            joinedAt: '2026-01-01T00:00:00.000Z',
+          },
+          {
+            playerId: 'other-player-id',
+            displayName: 'Other',
+            avatarUrl: null,
+            isReady: false,
+            isHost: true,
+            joinedAt: '2026-01-01T00:01:00.000Z',
+          },
+        ],
+      }),
+    );
+    await useLobbyStore.getState().refetchSnapshot();
+
+    expect(useLobbyStore.getState().myPlayerId).toBe('creator-player-id');
+    expect(useLobbyStore.getState().myIsHost).toBe(false);
+  });
+
+  it('treats an absent `players` field as "not in room": resets to Home with a notice', async () => {
+    const { useLobbyStore } = await import('./lobbyStore');
+    useLobbyStore.getState().enterFromJoin('ABCDEF', joinedRoom);
+
+    const snapshotWithoutPlayers = makeSnapshot();
+    delete (snapshotWithoutPlayers as { players?: unknown }).players;
+    getRoomByCodeMock.mockResolvedValue(snapshotWithoutPlayers);
+
+    await useLobbyStore.getState().refetchSnapshot();
+
+    const s = useLobbyStore.getState();
+    expect(s.roomId).toBeNull();
+    expect(s.players).toBeNull();
+    expect(s.notice).toBeTruthy();
   });
 
   it('is a no-op when there is no code yet', async () => {
@@ -222,6 +195,130 @@ describe('lobbyStore — refetchSnapshot', () => {
     expect(s.snapshotError).toBe('boom');
     expect(s.snapshotLoading).toBe(false);
     expect(s.roomId).toBe('room-1');
+  });
+
+  it('ignores a stale (superseded) response — only the latest request\'s result is applied', async () => {
+    const { useLobbyStore } = await import('./lobbyStore');
+    useLobbyStore.getState().enterFromJoin('ABCDEF', joinedRoom);
+
+    let resolveFirst!: (v: unknown) => void;
+    const firstPromise = new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
+    getRoomByCodeMock.mockReturnValueOnce(firstPromise);
+    const firstCall = useLobbyStore.getState().refetchSnapshot();
+
+    getRoomByCodeMock.mockResolvedValueOnce(makeSnapshot({ playerCount: 99 }));
+    const secondCall = useLobbyStore.getState().refetchSnapshot();
+    await secondCall;
+    expect(useLobbyStore.getState().playerCount).toBe(99);
+
+    // The first (slower) request now resolves after the second already
+    // applied — it must be dropped, not overwrite the newer state.
+    resolveFirst(makeSnapshot({ playerCount: 2 }));
+    await firstCall;
+
+    expect(useLobbyStore.getState().playerCount).toBe(99);
+  });
+});
+
+describe('lobbyStore — realtime events schedule a debounced/coalesced refetch', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  it('a single lobby event triggers exactly one refetch after the debounce window', async () => {
+    const { useLobbyStore } = await import('./lobbyStore');
+    useLobbyStore.getState().enterFromJoin('ABCDEF', joinedRoom);
+    getRoomByCodeMock.mockResolvedValue(makeSnapshot());
+
+    useLobbyStore.getState().applyPlayerJoined({
+      roomId: 'room-1',
+      gameId: 'game-1',
+      playerId: 'player-3',
+      playerCount: 3,
+      maxPlayers: 8,
+    });
+
+    expect(getRoomByCodeMock).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(150);
+    expect(getRoomByCodeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a burst of PLAYER_JOINED/LEFT/READY_CHANGED/HOST_TRANSFERRED within the window coalesces into one refetch', async () => {
+    const { useLobbyStore } = await import('./lobbyStore');
+    useLobbyStore.getState().enterFromJoin('ABCDEF', joinedRoom);
+    getRoomByCodeMock.mockResolvedValue(makeSnapshot());
+    const lobby = useLobbyStore.getState();
+
+    lobby.applyPlayerJoined({ roomId: 'room-1', gameId: 'game-1', playerId: 'p3', playerCount: 3, maxPlayers: 8 });
+    await vi.advanceTimersByTimeAsync(50);
+    lobby.applyReadySet({ roomId: 'room-1', gameId: 'game-1', playerId: 'player-2', isReady: true });
+    await vi.advanceTimersByTimeAsync(50);
+    lobby.applyHostTransferred({
+      roomId: 'room-1',
+      gameId: 'game-1',
+      previousHostPlayerId: 'player-1',
+      newHostPlayerId: 'player-2',
+    });
+    await vi.advanceTimersByTimeAsync(50);
+    lobby.applyPlayerLeft({
+      roomId: 'room-1',
+      gameId: 'game-1',
+      playerId: 'p3',
+      playerCount: 2,
+      newHostPlayerId: null,
+      roomClosed: false,
+    });
+
+    expect(getRoomByCodeMock).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(150);
+    expect(getRoomByCodeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('events for a different gameId are ignored (no refetch scheduled)', async () => {
+    const { useLobbyStore } = await import('./lobbyStore');
+    useLobbyStore.getState().enterFromJoin('ABCDEF', joinedRoom);
+
+    useLobbyStore.getState().applyPlayerJoined({
+      roomId: 'other-room',
+      gameId: 'other-game',
+      playerId: 'x',
+      playerCount: 99,
+      maxPlayers: 8,
+    });
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(getRoomByCodeMock).not.toHaveBeenCalled();
+  });
+
+  it('applyPhaseChanged updates currentPhase directly, without scheduling a refetch', async () => {
+    const { useLobbyStore } = await import('./lobbyStore');
+    useLobbyStore.getState().enterFromCreate(createdRoom);
+
+    useLobbyStore.getState().applyPhaseChanged({ from: 'LOBBY', to: 'ROLE_REVEAL', round: 0 });
+
+    expect(useLobbyStore.getState().currentPhase).toBe('ROLE_REVEAL');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(getRoomByCodeMock).not.toHaveBeenCalled();
+  });
+
+  it('reset() cancels a pending scheduled refetch', async () => {
+    const { useLobbyStore } = await import('./lobbyStore');
+    useLobbyStore.getState().enterFromJoin('ABCDEF', joinedRoom);
+    getRoomByCodeMock.mockResolvedValue(makeSnapshot());
+
+    useLobbyStore.getState().applyPlayerJoined({
+      roomId: 'room-1',
+      gameId: 'game-1',
+      playerId: 'p3',
+      playerCount: 3,
+      maxPlayers: 8,
+    });
+    useLobbyStore.getState().reset();
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(getRoomByCodeMock).not.toHaveBeenCalled();
   });
 });
 

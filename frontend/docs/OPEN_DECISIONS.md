@@ -114,7 +114,30 @@ way (`AuthModule`'s `expiresIn: '7d'`), so the exposure window this closes
 in one place (a variable in memory) was never the tight bound the "memory
 only" instruction implied.
 
-## OD-F2-001 — No per-player roster endpoint/event; lobby player list is self-only
+## OD-F2-001 — No per-player roster endpoint/event; lobby player list is self-only · RESOLVED (backend 769618e)
+
+**Resolution (F2.1).** Backend commit `769618e` (B-R1,
+`../../docs/decisions/OPEN_DECISIONS.md` OD-055) added exactly the `players`
+array proposed below to `RoomSummary`
+(`{ playerId, displayName, avatarUrl, isReady, isHost, joinedAt }`, active
+members only, omitted — not `[]` — for a non-member). F2.1
+(`store/lobbyStore.ts`, `screens/LobbyScreen.tsx`) now renders the real
+roster and derives `myIsHost`/`myIsReady` by matching `myPlayerId` against
+it on every refetch, closing the "stale on reconnect" gap flagged below —
+`refetchSnapshot()` now fully resyncs both fields, not just the aggregate
+ones. The one piece that's still a client-side deduction rather than
+server-given data: the room **creator's own `playerId`** is still never
+returned by `POST /rooms`, so it's identified from the first roster fetch
+as "whichever entry has `isHost: true`" (see `lobbyStore.ts`'s
+`resolveMyPlayerId` — valid because `createRoomTransaction` guarantees the
+creator is the sole host at that point) and then pinned in state, never
+recomputed. `userId` was deliberately left out of `RoomPlayerSummary` by
+OD-055 (privacy), so a `playerId`-returning `POST /rooms` response remains
+the only way to close this specific residual gap; not requested in this
+slice, kept as a note for a future one.
+
+The original problem statement and the (now implemented) proposal are kept
+below for context.
 
 **Context.** F2 asked for a lobby player list ("player list with avatar/name,
 ready badge, host marker"). Read literally before building anything:

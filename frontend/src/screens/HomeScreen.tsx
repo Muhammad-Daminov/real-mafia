@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { uz } from '../messages/uz';
 import { useAuthStore } from '../store/authStore';
 import { useLobbyStore } from '../store/lobbyStore';
@@ -18,6 +18,8 @@ function HomeScreen() {
   const enterFromCreate = useLobbyStore((s) => s.enterFromCreate);
   const enterFromJoin = useLobbyStore((s) => s.enterFromJoin);
   const refetchSnapshot = useLobbyStore((s) => s.refetchSnapshot);
+  const notice = useLobbyStore((s) => s.notice);
+  const clearNotice = useLobbyStore((s) => s.clearNotice);
 
   const [creating, setCreating] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -25,6 +27,14 @@ function HomeScreen() {
   const [error, setError] = useState<string | null>(null);
 
   const canAct = authStatus === 'authenticated';
+
+  // F2.1: `lobbyStore.notice` is a one-shot message set when a snapshot
+  // refetch finds `players` absent (kicked/removed/not-a-member) — shown
+  // once here, then cleared so it doesn't reappear on a later visit.
+  useEffect(() => {
+    if (notice) clearNotice();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleCreate = async () => {
     setCreating(true);
@@ -62,6 +72,8 @@ function HomeScreen() {
   return (
     <div className="mafia-screen">
       <h1>{uz.home.title}</h1>
+
+      {notice && <p className="mafia-banner mafia-banner--warn">{notice}</p>}
 
       <div className="mafia-card">
         <button className="mafia-button" onClick={() => void handleCreate()} disabled={!canAct || creating}>

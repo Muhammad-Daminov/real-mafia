@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react';
 import { uz } from '../messages/uz';
-import { useAuthStore } from '../store/authStore';
 import { useSocketStore } from '../store/socketStore';
 import { canStartGame, useLobbyStore } from '../store/lobbyStore';
 import { disconnectSocket } from '../socket/socketClient';
-import { leaveRoom, setReady, startGame } from '../api/rooms';
+import { leaveRoom, setReady, startGame, type RoomPlayerSummary } from '../api/rooms';
 import { describeRoomError } from '../errors/roomErrorMessages';
 
 const START_REASON_TEXT: Record<NonNullable<ReturnType<typeof canStartGame>['reasonKey']>, (state: {
@@ -16,15 +15,47 @@ const START_REASON_TEXT: Record<NonNullable<ReturnType<typeof canStartGame>['rea
   NOT_IN_LOBBY: () => uz.lobby.startReasonNotInLobby,
 };
 
+interface PlayerRowProps {
+  player: RoomPlayerSummary;
+  isMe: boolean;
+}
+
+function PlayerRow({ player, isMe }: PlayerRowProps) {
+  return (
+    <div className="mafia-player-row">
+      {player.avatarUrl ? (
+        <img className="mafia-avatar" src={player.avatarUrl} alt="" width={36} height={36} />
+      ) : (
+        <div className="mafia-avatar">{player.displayName.slice(0, 1).toUpperCase()}</div>
+      )}
+      <div style={{ flex: 1, textAlign: 'left' }}>
+        <div>
+          {player.displayName}
+          {isMe && <span className="mafia-hint" style={{ marginLeft: 6 }}>({uz.lobby.you})</span>}
+          {player.isHost && (
+            <span className="mafia-badge" style={{ marginLeft: 6 }}>
+              {uz.lobby.host}
+            </span>
+          )}
+        </div>
+      </div>
+      <span className={`mafia-badge ${player.isReady ? 'mafia-badge--ready' : ''}`}>
+        {player.isReady ? uz.lobby.ready : uz.lobby.notReady}
+      </span>
+    </div>
+  );
+}
+
 /**
- * Lobby screen (F2) — everything before the game starts. Player list is
- * necessarily minimal (self only, + an "N others" count) because no backend
- * endpoint/event returns a per-player roster (names/avatars/ready/host) —
- * see `frontend/docs/OPEN_DECISIONS.md` OD-F2-001. `App.tsx` swaps this
- * screen out for `GameStartedScreen` once `currentPhase` leaves `LOBBY`.
+ * Lobby screen (F2.1) — renders the real roster from `lobbyStore.players`
+ * (backend commit 769618e / OD-055). `myIsReady`/`myIsHost` (and therefore
+ * the Ready toggle label and Start button's gate) are derived entirely from
+ * the roster entry matching `myPlayerId`, refreshed on every lobby realtime
+ * event via a debounced snapshot refetch — see `lobbyStore.ts`. `App.tsx`
+ * swaps this screen out for `GameStartedScreen` once `currentPhase` leaves
+ * `LOBBY`.
  */
 function LobbyScreen() {
-  const user = useAuthStore((s) => s.user);
   const socketStatus = useSocketStore((s) => s.status);
   const lobby = useLobbyStore();
 
@@ -50,9 +81,11 @@ function LobbyScreen() {
     setReadyBusy(true);
     setActionError(null);
     try {
-      const next = !lobby.myIsReady;
-      const result = await setReady(lobby.roomId, next);
-      lobby.setMyReadyLocally(result.isReady);
+      await setReady(lobby.roomId, !lobby.myIsReady);
+      // No optimistic local write — the roster (source of truth for
+      // myIsReady/myIsHost) is refreshed by the PLAYER_READY_CHANGED
+      // broadcast this call triggers, same as every other lobby member.
+      void lobby.refetchSnapshot();
     } catch (err) {
       setActionError(describeRoomError(err));
     } finally {
@@ -109,8 +142,6 @@ function LobbyScreen() {
     gameStatus: lobby.gameStatus,
   });
 
-  const otherPlayers = Math.max(lobby.playerCount - 1, 0);
-
   return (
     <div className="mafia-screen">
       <h1>{uz.lobby.title}</h1>
@@ -134,21 +165,13 @@ function LobbyScreen() {
       </div>
 
       <div className="mafia-card">
-        <div className="mafia-player-row">
-          <div className="mafia-avatar">{(user?.firstName ?? '?').slice(0, 1).toUpperCase()}</div>
-          <div style={{ flex: 1, textAlign: 'left' }}>
-            <div>
-              {uz.lobby.you}
-              {lobby.myIsHost && <span className="mafia-badge" style={{ marginLeft: 6 }}>{uz.lobby.host}</span>}
-            </div>
-          </div>
-          <span className={`mafia-badge ${lobby.myIsReady ? 'mafia-badge--ready' : ''}`}>
-            {lobby.myIsReady ? uz.lobby.ready : uz.lobby.notReady}
-          </span>
-        </div>
-        <p className="mafia-hint">
-          {otherPlayers > 0 ? uz.lobby.otherPlayers(otherPlayers) : uz.lobby.noOtherPlayers}
-        </p>
+        {lobby.players === null ? (
+          <p className="mafia-hint">{uz.lobby.loadingRoster}</p>
+        ) : (
+          lobby.players.map((player) => (
+            <PlayerRow key={player.playerId} player={player} isMe={player.playerId === lobby.myPlayerId} />
+          ))
+        )}
       </div>
 
       <div className="mafia-row">

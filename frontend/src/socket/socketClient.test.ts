@@ -54,6 +54,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.resetModules();
+  vi.useRealTimers();
 });
 
 describe('connectSocket / socket status transitions', () => {
@@ -142,10 +143,28 @@ describe('connectSocket / socket status transitions', () => {
   });
 });
 
-describe('lobbyStore wiring (F2)', () => {
-  it('applies PLAYER_JOINED / PLAYER_LEFT / PLAYER_READY_CHANGED / HOST_TRANSFERRED / PHASE_CHANGED to lobbyStore', async () => {
+describe('lobbyStore wiring (F2 / F2.1)', () => {
+  const fullSnapshot = {
+    roomId: 'room-1',
+    code: 'ABCDEF',
+    visibility: 'PRIVATE',
+    status: 'OPEN',
+    rulesetMode: 'NORMAL',
+    maxPlayers: 8,
+    gameId: 'game-abc',
+    gameStatus: 'LOBBY',
+    playerCount: 2,
+    players: [
+      { playerId: 'player-1', displayName: 'Host', avatarUrl: null, isReady: false, isHost: true, joinedAt: 't1' },
+      { playerId: 'player-2', displayName: 'Me', avatarUrl: null, isReady: false, isHost: false, joinedAt: 't2' },
+    ],
+  };
+
+  it('PLAYER_JOINED / PLAYER_LEFT / PLAYER_READY_CHANGED / HOST_TRANSFERRED each schedule a debounced roster refetch (F2.1); PHASE_CHANGED applies directly', async () => {
+    vi.useFakeTimers();
     const fake = createFakeSocket();
     ioMock.mockReturnValue(fake);
+    getRoomByCodeMock.mockResolvedValue(fullSnapshot);
 
     const { connectSocket } = await import('./socketClient');
     const { useLobbyStore } = await import('../store/lobbyStore');
@@ -160,7 +179,8 @@ describe('lobbyStore wiring (F2)', () => {
 
     connectSocket('game-abc');
     fake.__trigger('connect');
-    getRoomByCodeMock.mockClear(); // clear the reconnect-triggered refetch call below asserts separately
+    await vi.advanceTimersByTimeAsync(0);
+    getRoomByCodeMock.mockClear(); // clear the reconnect-triggered refetch call, asserted separately below
 
     fake.__trigger('PLAYER_JOINED', {
       roomId: 'room-1',
@@ -169,27 +189,23 @@ describe('lobbyStore wiring (F2)', () => {
       playerCount: 3,
       maxPlayers: 8,
     });
-    expect(useLobbyStore.getState().playerCount).toBe(3);
+    expect(getRoomByCodeMock).not.toHaveBeenCalled(); // debounced, not immediate
 
-    fake.__trigger('PLAYER_READY_CHANGED', {
-      roomId: 'room-1',
-      gameId: 'game-abc',
-      playerId: 'player-2',
-      isReady: true,
-    });
-    expect(useLobbyStore.getState().myIsReady).toBe(true);
+    fake.__trigger('PHASE_CHANGED', { from: 'LOBBY', to: 'ROLE_REVEAL', round: 0 });
+    expect(useLobbyStore.getState().currentPhase).toBe('ROLE_REVEAL'); // applied directly, no refetch involved
 
+    await vi.advanceTimersByTimeAsync(150);
+    expect(getRoomByCodeMock).toHaveBeenCalledTimes(1);
+    expect(useLobbyStore.getState().players).toEqual(fullSnapshot.players);
+
+    getRoomByCodeMock.mockClear();
+    fake.__trigger('PLAYER_READY_CHANGED', { roomId: 'room-1', gameId: 'game-abc', playerId: 'player-2', isReady: true });
     fake.__trigger('HOST_TRANSFERRED', {
       roomId: 'room-1',
       gameId: 'game-abc',
       previousHostPlayerId: 'player-1',
       newHostPlayerId: 'player-2',
     });
-    expect(useLobbyStore.getState().myIsHost).toBe(true);
-
-    fake.__trigger('PHASE_CHANGED', { from: 'LOBBY', to: 'ROLE_REVEAL', round: 0 });
-    expect(useLobbyStore.getState().currentPhase).toBe('ROLE_REVEAL');
-
     fake.__trigger('PLAYER_LEFT', {
       roomId: 'room-1',
       gameId: 'game-abc',
@@ -198,23 +214,15 @@ describe('lobbyStore wiring (F2)', () => {
       newHostPlayerId: null,
       roomClosed: false,
     });
-    expect(useLobbyStore.getState().playerCount).toBe(2);
+    await vi.advanceTimersByTimeAsync(150);
+    // A burst of three lobby events coalesces into exactly one refetch.
+    expect(getRoomByCodeMock).toHaveBeenCalledTimes(1);
   });
 
-  it('refetches the lobby snapshot on every (re)connect when a lobby is active', async () => {
+  it('refetches the lobby snapshot immediately (not debounced) on every (re)connect when a lobby is active', async () => {
     const fake = createFakeSocket();
     ioMock.mockReturnValue(fake);
-    getRoomByCodeMock.mockResolvedValue({
-      roomId: 'room-1',
-      code: 'ABCDEF',
-      visibility: 'PRIVATE',
-      status: 'OPEN',
-      rulesetMode: 'NORMAL',
-      maxPlayers: 8,
-      gameId: 'game-abc',
-      gameStatus: 'LOBBY',
-      playerCount: 5,
-    });
+    getRoomByCodeMock.mockResolvedValue(fullSnapshot);
 
     const { connectSocket } = await import('./socketClient');
     const { useLobbyStore } = await import('../store/lobbyStore');

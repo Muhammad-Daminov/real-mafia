@@ -119,6 +119,7 @@
   font-weight: 700;
   color: var(--tg-theme-button-text-color, #fff);
   flex-shrink: 0;
+  object-fit: cover;
 }
 
 .mafia-badge {

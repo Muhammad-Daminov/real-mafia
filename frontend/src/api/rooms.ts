@@ -142,6 +142,20 @@ export type GamePhaseName =
   | 'WIN_CHECK'
   | 'GAME_OVER';
 
+/**
+ * `RoomsService.RoomPlayerSummary` (backend commit 769618e, B-R1) — never
+ * carries `telegramId` or any internal field. `avatarUrl` is nullable (we
+ * only store what Telegram's `photo_url` gave us at login).
+ */
+export interface RoomPlayerSummary {
+  playerId: string;
+  displayName: string;
+  avatarUrl: string | null;
+  isReady: boolean;
+  isHost: boolean;
+  joinedAt: string;
+}
+
 export interface RoomSummary {
   roomId: string;
   code: string;
@@ -152,6 +166,12 @@ export interface RoomSummary {
   gameId: string;
   gameStatus: GameStatus;
   playerCount: number;
+  /**
+   * OD-055 (backend): present only when the caller is an active member of
+   * this room's game, ordered by `joinedAt` — omitted (not `[]`) for a
+   * non-member/removed caller. See OD-F2-001 in this file's companion doc.
+   */
+  players?: RoomPlayerSummary[];
 }
 
 export function getRoomByCode(code: string): Promise<RoomSummary> {
