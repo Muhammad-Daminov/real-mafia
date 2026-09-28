@@ -58,8 +58,8 @@ export function connectSocket(gameId: string): void {
     useSocketStore.getState().setStatus('error', 'reconnection attempts exhausted');
   });
 
-  instance.onAny((eventName: string) => {
-    useSocketStore.getState().setLastEvent(eventName);
+  instance.onAny((eventName: string, payload: unknown) => {
+    useSocketStore.getState().pushEvent(eventName, payload);
   });
 
   socket = instance;

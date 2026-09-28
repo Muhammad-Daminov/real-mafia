@@ -70,7 +70,7 @@ describe('connectSocket / socket status transitions', () => {
     expect(useSocketStore.getState().status).toBe('connected');
   });
 
-  it('tracks the last received event name via onAny, for any event including connect', async () => {
+  it('appends the received event (name + payload) to the event log via onAny, for any event including connect', async () => {
     const fake = createFakeSocket();
     ioMock.mockReturnValue(fake);
 
@@ -80,7 +80,9 @@ describe('connectSocket / socket status transitions', () => {
     connectSocket('game-abc');
     fake.__trigger('PHASE_CHANGED', { from: 'NIGHT', to: 'MORNING', round: 1 });
 
-    expect(useSocketStore.getState().lastEventName).toBe('PHASE_CHANGED');
+    const [entry] = useSocketStore.getState().eventLog;
+    expect(entry?.name).toBe('PHASE_CHANGED');
+    expect(entry?.payload).toEqual({ from: 'NIGHT', to: 'MORNING', round: 1 });
   });
 
   it('on connect_error, sets status error and attempts exactly one re-auth per error episode', async () => {
