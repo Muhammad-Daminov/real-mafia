@@ -842,6 +842,120 @@ Decision:
 This is an addition to §17.5 and should be folded into the Master TZ at the
 next revision, same as OD-035–049.
 
+### OD-051 — Outbox Table Shape and First Concrete Topic Scope · RESOLVED
+Context: §19 (line 600, verbatim): "Outbox (v5.0 §25): transactional outbox,
+`FOR UPDATE SKIP LOCKED` dispatcher, bounded exponential backoff with jitter,
+DLQ, at-least-once/duplicate-tolerant delivery. New topic: `STARS_REFUND`
+(§25.5) and `REFERRAL_REWARD_NOTIFY` (§26.4), both following the identical
+outbox contract — gameplay and economy notifications share one dispatcher and
+one reliability model." The dispatcher table at line 1199 names five topics
+total: `TELEGRAM_MESSAGE`, `STATS_PROCESS`, `WALLET_CREDIT` (§23.4),
+`STARS_REFUND` (§25.5), `REFERRAL_REWARD_NOTIFY` (§26.4). v5.0 §25's actual
+schema text (the section this is all "unchanged in mechanism" from) is not
+reproduced anywhere in this repository — same carry-forward gap as v5.0 §18.5
+(OD-048) and §21 (OD-043).
+
+Two things are nonetheless already decided, not ambiguous:
+1. **Purpose is clear and distinct from the realtime layer**: line 158's
+   pipeline ("one transaction writing state + events + outbox + scheduled
+   tasks") and line 720 ("a gameplay reward credit is enqueued as an
+   outbox-triggered follow-up command... applied by the same dispatcher that
+   delivers Telegram messages, so a wallet-credit failure can never roll back
+   a completed game") both describe the outbox as the mechanism for
+   external/cross-aggregate side effects that must survive independently of
+   the triggering transaction — Telegram bot pushes to a player who may not
+   be connected to the Mini App's Socket.IO session, and cross-aggregate
+   follow-up commands (a wallet credit triggered by a finished game, §23.4).
+   This is a different problem from realtime's `game:{gameId}` broadcast
+   (OD-047/049/050), which only reaches a currently-connected socket.
+2. **No new `outbox_events` table is needed.** OD-043 (recorded 2026-09-26,
+   *before* this slice existed) already anticipated this exact question and
+   answered it: its retry/backoff policy was deliberately applied to
+   `scheduled_tasks` because "this is the exact policy §19/§25 already
+   mandates for the (not-yet-built) outbox dispatcher; applying it here too
+   means the one shared `scheduled_tasks` table has a single retry shape
+   regardless of which future consumer (phase transitions now, the outbox
+   dispatcher later) enqueued a given row." `ScheduledTask`'s `kind`/`payload`
+   columns are already fully opaque/generic (never interpreted by
+   `SchedulerService`) — exactly what an outbox topic needs. Building a
+   second table would duplicate `FOR UPDATE SKIP LOCKED` claiming,
+   backoff/jitter, and max-attempts logic for no gain, and contradict OD-043's
+   own stated reasoning.
+
+Decision, scope for what actually gets enqueued *today*:
+3. Of the five named topics, `WALLET_CREDIT`/`STARS_REFUND`/
+   `REFERRAL_REWARD_NOTIFY` have no producer: `economy`/`payments`/`referral`
+   are still empty scaffold modules (`src/{economy,payments,referral}/*.module.ts`,
+   no services, confirmed by reading each directory) — nothing to enqueue.
+   `STATS_PROCESS` (§37-38, "derived/async statistics") has no producer or
+   consumer built yet either and is unrelated to game-engine/rooms' current
+   write paths. **Only `TELEGRAM_MESSAGE` has a real, concrete trigger
+   available today.**
+4. Within `TELEGRAM_MESSAGE`, this slice ships exactly one event:
+   `GAME_FINISHED` — enqueued from `GameLifecycleService.transitionPhase`'s
+   existing `gameOver` branch, in the same transaction as the `GameResult`
+   insert, one task per dealt-in player (`roleAssignment` not null; a player
+   who left the lobby before StartGame is excluded — they were never in the
+   game). This is deliberately the smaller first cut per this slice's own
+   instructions: §67's feature list only says "Telegram Bot notifications via
+   outbox" with zero enumeration of concrete trigger events, and v5.0's
+   detail is unavailable, so no other event (game start, "your turn",
+   per-round pings) is invented against a spec that doesn't name it. See
+   OD-052 for what's explicitly deferred.
+5. **No new admin surface for exhausted (`FAILED`) outbox tasks.** This was
+   already a known, logged gap for `scheduled_tasks` generally (no
+   admin-visible surface for terminal `FAILED` rows); nothing about the
+   outbox's at-least-once/DLQ framing in §19/§25 requires building that
+   surface *now* — `FAILED` is already the correct terminal state per
+   OD-043d, and §19's "DLQ" language is satisfied by that terminal status
+   existing, whether or not anyone has built a UI to browse it yet. Adding an
+   admin surface would be new functionality beyond "wire the second
+   consumer," so it stays a known gap, not addressed here.
+
+This is an addition to §19/§25 and should be folded into the Master TZ at the
+next revision, same as OD-035–050.
+
+### OD-052 — Outbox Notification Copy: Localization and Error Classification · RESOLVED
+Context: §21 (line 966, verbatim): "Every user-facing string — Mini App UI,
+bot messages, push/outbox notifications, error messages, store item
+names/descriptions, referral share text — MUST exist in all three [uz/ru/en]."
+No prior slice added a `locale` column to `User`, and no product copy for any
+bot notification has been supplied anywhere in this repository or by the
+product owner's addenda.
+
+Decision:
+1. **Real localized copy is out of scope for this slice** — it is a content/
+   translation deliverable, not an engineering default an agent should
+   invent. `TelegramNotificationService`'s `renderText` is a single,
+   clearly-isolated function producing interim, non-localized (English)
+   copy from the `TELEGRAM_MESSAGE` payload's structured `event`/`gameId`/
+   `winnerTeam` fields — chosen as structured facts rather than pre-rendered
+   text specifically so real i18n templates can replace `renderText` later
+   without touching any enqueue call site or the delivery/retry mechanism.
+   Logged here as a known gap requiring product-supplied uz/ru/en copy (and,
+   before that, a `User.locale` column/read path) before this is genuinely
+   spec-compliant.
+2. **Telegram API delivery-error classification: no retryable-vs-permanent
+   distinction.** A 4xx response (e.g. "bot was blocked by the user," a
+   permanent condition no retry will fix) is treated identically to a 5xx or
+   network failure — the handler throws in either case and lets
+   `SchedulerService.pollOnce`'s existing catch block call `fail()`, which
+   retries with OD-043c's backoff until OD-043d's `maxAttempts` (10), then
+   moves to `FAILED`. This was an explicit instruction for this slice, not a
+   default invented under time pressure: the alternative (recognizing "blocked
+   the bot" and jumping straight to `FAILED`) would require a second retry
+   mechanism, which the task scope explicitly ruled out. The cost is at most
+   10 wasted delivery attempts (over OD-043c's backoff schedule, capped at
+   5 minutes) against an unrecoverable target before the task reaches its
+   correct terminal state — acceptable for a first cut.
+
+   **Superseded by OD-053** for the 400/403/429 cases specifically — see below.
+   The "no second retry mechanism" reasoning still holds for 5xx/network
+   failures, which remain unclassified.
+
+This is an addition to §21 and should be folded into the Master TZ at the
+next revision, same as OD-035–051.
+
 
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
@@ -871,6 +985,6 @@ None. Every previously blocking decision is resolved (see the addendum above).
   2026-09-25 addendum resolved them.)
 - OD-031–OD-034 are new in v6.0 (MASTER_TZ.md §42.2/§42.1) and non-blocking, each with a
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
-- Total: 40 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
-  OD-037 through OD-050 recorded 2026-09-26/27), 0 open+blocking,
-  10 open+non-blocking (50 IDs, OD-001 through OD-050).
+- Total: 42 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
+  OD-037 through OD-052 recorded 2026-09-26/27), 0 open+blocking,
+  10 open+non-blocking (52 IDs, OD-001 through OD-052).

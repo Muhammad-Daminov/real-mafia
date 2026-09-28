@@ -8,6 +8,10 @@ import {
   PhaseAdvanceTaskPayload,
   phaseAdvanceDedupeKey,
 } from './scheduled-task-kinds';
+import {
+  TELEGRAM_MESSAGE_TASK_KIND,
+  TelegramMessageTaskPayload,
+} from '../common/outbox/outbox-task-kinds';
 
 /**
  * §14.2's per-phase durations in seconds, computed once at StartGame and
@@ -174,6 +178,8 @@ export class GameLifecycleService {
       await tx.gameResult.create({
         data: { gameId: input.gameId, winnerTeam: input.winnerTeam },
       });
+
+      await this.enqueueGameFinishedNotifications(tx, input.gameId, input.winnerTeam);
     }
 
     if (input.endsAt !== null) {
@@ -228,5 +234,41 @@ export class GameLifecycleService {
       runAt: endsAt,
       dedupeKey: phaseAdvanceDedupeKey(gameId),
     });
+  }
+
+  /**
+   * §19/§25 (v5.0)/OD-051: the outbox's first concrete producer call site —
+   * one `TELEGRAM_MESSAGE` task per dealt-in player (`roleAssignment` not
+   * null; a player who left the lobby before StartGame never got one and
+   * has no stake in the outcome, so is excluded), enqueued in the same
+   * transaction as the `GameResult` row above, mirroring
+   * `enqueuePhaseAdvanceCheck`'s "enqueue commits atomically with the write
+   * it corresponds to" discipline. No `dedupeKey`: `transitionPhase` only
+   * ever reaches `gameOver: true` once per game (§10.2's state machine has
+   * exactly one path into `GAME_OVER`), so there is no repeat-call case to
+   * dedupe against, unlike `PHASE_ADVANCE_CHECK`'s per-deadline reuse.
+   */
+  private async enqueueGameFinishedNotifications(
+    tx: Prisma.TransactionClient,
+    gameId: string,
+    winnerTeam: WinnerTeam,
+  ): Promise<void> {
+    const players = await tx.gamePlayer.findMany({
+      where: { gameId, roleAssignment: { isNot: null } },
+      select: { user: { select: { telegramId: true } } },
+    });
+
+    for (const player of players) {
+      await this.scheduler.enqueue(tx, {
+        kind: TELEGRAM_MESSAGE_TASK_KIND,
+        payload: {
+          telegramId: player.user.telegramId,
+          event: 'GAME_FINISHED',
+          gameId,
+          winnerTeam,
+        } satisfies TelegramMessageTaskPayload,
+        runAt: new Date(),
+      });
+    }
   }
 }

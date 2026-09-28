@@ -7,6 +7,7 @@ import { RoleAssignmentService } from './role-assignment.service';
 import { GameLifecycleService, PhaseDurationsSec } from './game-lifecycle.service';
 import { PhaseTransitionService } from './phase-transition.service';
 import { phaseAdvanceDedupeKey } from './scheduled-task-kinds';
+import { TELEGRAM_MESSAGE_TASK_KIND } from '../common/outbox/outbox-task-kinds';
 import { NightResolutionService } from './night-actions/night-resolution.service';
 import { VoteResolutionService } from './voting/vote-resolution.service';
 import { RealtimeEventService } from '../common/realtime/realtime-event.service';
@@ -222,6 +223,11 @@ describe('PhaseTransitionService (integration)', () => {
       await prisma.scheduledTask.deleteMany({
         where: { dedupeKey: { in: createdGameIds.map(phaseAdvanceDedupeKey) } },
       });
+      for (const gameId of createdGameIds) {
+        await prisma.scheduledTask.deleteMany({
+          where: { kind: TELEGRAM_MESSAGE_TASK_KIND, payload: { path: ['gameId'], equals: gameId } },
+        });
+      }
       await prisma.gameAction.deleteMany({ where: { gameId: { in: createdGameIds } } });
       await prisma.gameVote.deleteMany({ where: { gameId: { in: createdGameIds } } });
       await prisma.gameResult.deleteMany({ where: { gameId: { in: createdGameIds } } });
