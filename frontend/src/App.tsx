@@ -3,15 +3,20 @@ import { useAuthStore } from './store/authStore';
 import { useSocketStore } from './store/socketStore';
 import { connectSocket, disconnectSocket } from './socket/socketClient';
 import { ApiError } from './api/client';
-import { createRoom, type CreatedRoom } from './api/rooms';
+import { createRoom, joinRoom, leaveRoom, setReady, type CreatedRoom } from './api/rooms';
 
 /**
- * Slice F1/F1.5's entire UI: a debug screen proving the auth + socket
- * plumbing works, nothing else (no lobby, no game screens — see the
+ * Slice F1/F1.5/F1.6's entire UI: a debug screen proving the auth + socket
+ * plumbing works, nothing else (no lobby, no game screens — see each
  * slice's stated non-goals). "Create room" uses hardcoded debug defaults
  * (8 players, NORMAL ruleset) since there's no room-config UI in scope —
  * `POST /rooms` requires both fields (../../src/rooms/dto/create-room.dto.ts)
  * with no sensible single default for either, unlike `visibility`.
+ *
+ * `currentRoomId` (F1.6) is the **room** id, not the game id — Ready/Leave
+ * are room-id-keyed endpoints (`LeaveRoomDto`/`SetReadyDto`'s own
+ * docstrings: "the room id is a route param, not body"), a real, easy-to-miss
+ * distinction from the gameId the socket connects with.
  */
 function App() {
   const { status: authStatus, user, error: authError, authenticate } = useAuthStore();
@@ -21,6 +26,11 @@ function App() {
   const [createdRoom, setCreatedRoom] = useState<CreatedRoom | null>(null);
   const [creatingRoom, setCreatingRoom] = useState(false);
   const [roomError, setRoomError] = useState<ApiError | Error | null>(null);
+  const [joinCodeInput, setJoinCodeInput] = useState('');
+  const [joiningRoom, setJoiningRoom] = useState(false);
+  const [currentRoomId, setCurrentRoomId] = useState<string | null>(null);
+  const [settingReady, setSettingReady] = useState(false);
+  const [leavingRoom, setLeavingRoom] = useState(false);
 
   useEffect(() => {
     void authenticate();
@@ -48,6 +58,7 @@ function App() {
     try {
       const room = await createRoom({ maxPlayers: 8, rulesetMode: 'NORMAL' });
       setCreatedRoom(room);
+      setCurrentRoomId(room.roomId);
       setGameIdInput(room.gameId);
       setConnectedGameId(room.gameId);
       connectSocket(room.gameId);
@@ -55,6 +66,53 @@ function App() {
       setRoomError(error instanceof Error ? error : new Error(String(error)));
     } finally {
       setCreatingRoom(false);
+    }
+  };
+
+  const handleJoinRoom = async () => {
+    const code = joinCodeInput.trim();
+    if (!code) return;
+    setJoiningRoom(true);
+    setRoomError(null);
+    try {
+      const room = await joinRoom(code);
+      setCreatedRoom(null);
+      setCurrentRoomId(room.roomId);
+      setGameIdInput(room.gameId);
+      setConnectedGameId(room.gameId);
+      connectSocket(room.gameId);
+    } catch (error) {
+      setRoomError(error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      setJoiningRoom(false);
+    }
+  };
+
+  const handleSetReady = async () => {
+    if (!currentRoomId) return;
+    setSettingReady(true);
+    setRoomError(null);
+    try {
+      await setReady(currentRoomId, true);
+    } catch (error) {
+      setRoomError(error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      setSettingReady(false);
+    }
+  };
+
+  const handleLeaveRoom = async () => {
+    if (!currentRoomId) return;
+    setLeavingRoom(true);
+    setRoomError(null);
+    try {
+      await leaveRoom(currentRoomId);
+      setCurrentRoomId(null);
+      setCreatedRoom(null);
+    } catch (error) {
+      setRoomError(error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      setLeavingRoom(false);
     }
   };
 
@@ -83,7 +141,7 @@ function App() {
       </section>
 
       <section style={{ marginTop: '16px', padding: '12px', border: '1px solid #333', borderRadius: '8px' }}>
-        <h2 style={{ fontSize: '16px', marginTop: 0 }}>Create room</h2>
+        <h2 style={{ fontSize: '16px', marginTop: 0 }}>Room</h2>
         <button onClick={() => void handleCreateRoom()} disabled={authStatus !== 'authenticated' || creatingRoom}>
           {creatingRoom ? 'Creating…' : 'Create room'}
         </button>
@@ -92,6 +150,36 @@ function App() {
             code: {createdRoom.code} · gameId: {createdRoom.gameId}
           </p>
         )}
+
+        <div style={{ marginTop: '12px' }}>
+          <input
+            value={joinCodeInput}
+            onChange={(e) => setJoinCodeInput(e.target.value)}
+            placeholder="room code"
+            disabled={authStatus !== 'authenticated'}
+            style={{ marginRight: '8px' }}
+          />
+          <button
+            onClick={() => void handleJoinRoom()}
+            disabled={authStatus !== 'authenticated' || joiningRoom || !joinCodeInput.trim()}
+          >
+            {joiningRoom ? 'Joining…' : 'Join room'}
+          </button>
+        </div>
+
+        <div style={{ marginTop: '12px' }}>
+          <button onClick={() => void handleSetReady()} disabled={!currentRoomId || settingReady}>
+            {settingReady ? 'Setting ready…' : 'Ready'}
+          </button>
+          <button
+            onClick={() => void handleLeaveRoom()}
+            disabled={!currentRoomId || leavingRoom}
+            style={{ marginLeft: '8px' }}
+          >
+            {leavingRoom ? 'Leaving…' : 'Leave'}
+          </button>
+        </div>
+
         {roomError && (
           <p style={{ color: '#f87171' }}>
             error:{' '}
