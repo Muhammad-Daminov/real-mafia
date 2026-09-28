@@ -114,6 +114,84 @@ way (`AuthModule`'s `expiresIn: '7d'`), so the exposure window this closes
 in one place (a variable in memory) was never the tight bound the "memory
 only" instruction implied.
 
+## OD-F2-001 — No per-player roster endpoint/event; lobby player list is self-only
+
+**Context.** F2 asked for a lobby player list ("player list with avatar/name,
+ready badge, host marker"). Read literally before building anything:
+
+- `GET /rooms/:code` (`RoomsController.getByCode` →
+  `RoomsService.getRoomByCode`) is the only room/game snapshot endpoint that
+  exists. Its response (`RoomSummary`) is aggregate-only: `roomId, code,
+  visibility, status, rulesetMode, maxPlayers, gameId, gameStatus,
+  playerCount` — no `players` array, no per-player `isReady`, no
+  `hostPlayerId`.
+- None of the six room-command response DTOs (`CreatedRoom`, `JoinedRoom`,
+  `LeftRoom`, `ReadySet`, `HostTransferred`, `GameStarted`) carry more than
+  the *acting* player's own id (`playerId`) plus an aggregate `playerCount`.
+  `CreatedRoom` doesn't even carry that — the room creator's own `playerId`
+  is never returned by `POST /rooms` at all (only `JoinedRoom` has one).
+- The realtime events (OD-049) reuse these same response DTOs verbatim as
+  their payloads, so they don't add roster information either.
+- `handleConnection` in `realtime.gateway.ts` sends no initial roster/sync
+  event on socket connect.
+
+There is no code path anywhere that a client can use to learn another
+player's `userId`/name/avatar, or to (re)discover the full ready/host state
+of players it didn't personally witness join/ready/get-transferred while
+connected.
+
+**Decision (per this task's own instruction): don't invent a workaround.**
+The lobby screen (`screens/LobbyScreen.tsx`) shows only:
+- an aggregate `n / capacity` count (from `RoomSummary.playerCount`, kept
+  live via `PLAYER_JOINED`/`PLAYER_LEFT`'s own `playerCount` field — both
+  are broadcast to the whole room, so this count *is* reliable for every
+  connected client, unlike a roster would be),
+- the current user's own row (avatar-initial/name from `GET /users/me`,
+  ready badge from `myIsReady`, host badge from `myIsHost` — both derived
+  from the current user's own actions/events, see below),
+- a plain "N others" line for everyone else, with no names/avatars/ready
+  state, since none of that is ever available for players other than self.
+
+**`myIsHost` is still correct without a roster.** Joiners get their own
+`playerId` from `JoinedRoom.playerId` and compare it directly against
+`HOST_TRANSFERRED.newHostPlayerId`. The creator never gets its own
+`playerId`, but `myIsHost` starts `true` (guaranteed by
+`createRoomTransaction`'s atomic Room+Game+host-seat write) and is set to
+`false` the moment *any* `HOST_TRANSFERRED` event arrives while
+`myIsHost` was `true` — a valid deduction from the event's own semantics
+(a transfer just happened, I was host, therefore I no longer am), not a
+guess. See `lobbyStore.ts`'s `applyHostTransferred`.
+
+**A real consequence worth flagging.** Because there's no per-player
+snapshot, `refetchSnapshot()` (called on every socket (re)connect, since
+there's no event-replay per §20) can only refresh the aggregate fields —
+`myIsHost`/`myIsReady` cannot be resynced this way. A player who
+disconnects and misses a `HOST_TRANSFERRED` or `PLAYER_READY_CHANGED`
+event that was about them would reconnect with a stale local `myIsHost`/
+`myIsReady` until the next such event fires. This is a real (if narrow)
+correctness gap, not addressed in this slice.
+
+**Proposed minimal backend addition (not implemented — out of this slice's
+scope, "do not modify the backend").** Extend `RoomSummary` (i.e.
+`GET /rooms/:code`'s response) with a `players` array, e.g.:
+
+```ts
+players: Array<{
+  playerId: string;
+  userId: string;
+  displayName: string;
+  avatarUrl: string | null;
+  isReady: boolean;
+  isHost: boolean;
+}>
+```
+
+All of this data already exists (`GamePlayer.isReady`, `Game.hostPlayerId`,
+`User.firstName`/`avatar`) — this is a projection change to an existing
+query, not a new subsystem. This single addition would let the lobby show a
+real roster and let `refetchSnapshot()` fully resync `myIsHost`/`myIsReady`
+on reconnect, closing the gap above too.
+
 ## Resolved gap (was open, fixed on the backend side): CORS
 
 **Originally flagged here:** `src/main.ts` never called `app.enableCors()`,

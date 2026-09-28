@@ -1,0 +1,143 @@
+/**
+ * Home/Lobby/Started screens' styling. Uses Telegram's `--tg-theme-*` CSS
+ * vars (bound by `telegram/theme.ts` when running inside Telegram) with
+ * fixed dark-mode-friendly fallbacks for plain-browser dev. No UI library —
+ * plain flexbox, mobile-first.
+ */
+.mafia-screen {
+  min-height: 100svh;
+  box-sizing: border-box;
+  padding: 20px 16px 32px;
+  background: var(--tg-theme-bg-color, #0b0b0f);
+  color: var(--tg-theme-text-color, #f5f5f7);
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+.mafia-screen h1 {
+  font-size: 22px;
+  margin: 8px 0 0;
+}
+
+.mafia-card {
+  background: var(--tg-theme-secondary-bg-color, #17171d);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mafia-button {
+  appearance: none;
+  border: none;
+  border-radius: 10px;
+  padding: 12px 16px;
+  font-size: 16px;
+  font-weight: 600;
+  background: var(--tg-theme-button-color, #5288c1);
+  color: var(--tg-theme-button-text-color, #ffffff);
+  cursor: pointer;
+}
+
+.mafia-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mafia-button--secondary {
+  background: transparent;
+  border: 1px solid var(--tg-theme-hint-color, #708499);
+  color: var(--tg-theme-text-color, #f5f5f7);
+}
+
+.mafia-input {
+  border-radius: 10px;
+  border: 1px solid var(--tg-theme-hint-color, #708499);
+  background: var(--tg-theme-bg-color, #0b0b0f);
+  color: var(--tg-theme-text-color, #f5f5f7);
+  padding: 10px 12px;
+  font-size: 16px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.mafia-code {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 2px;
+}
+
+.mafia-hint {
+  color: var(--tg-theme-hint-color, #8a8a90);
+  font-size: 13px;
+  margin: 0;
+}
+
+.mafia-banner {
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+.mafia-banner--warn {
+  background: rgba(234, 179, 8, 0.15);
+  color: #eab308;
+}
+
+.mafia-banner--error {
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
+}
+
+.mafia-player-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mafia-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--tg-theme-button-color, #5288c1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  color: var(--tg-theme-button-text-color, #fff);
+  flex-shrink: 0;
+}
+
+.mafia-badge {
+  font-size: 12px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: var(--tg-theme-secondary-bg-color, #23232b);
+}
+
+.mafia-badge--ready {
+  background: rgba(74, 222, 128, 0.2);
+  color: #4ade80;
+}
+
+.mafia-row {
+  display: flex;
+  gap: 10px;
+}
+
+.mafia-row > * {
+  flex: 1;
+}
