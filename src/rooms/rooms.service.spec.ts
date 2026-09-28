@@ -8,6 +8,7 @@ import { RoleAssignmentService } from '../game-engine/role-assignment.service';
 import { GameLifecycleService } from '../game-engine/game-lifecycle.service';
 import { RoomsService } from './rooms.service';
 import { RoomErrorCode, RoomException } from './rooms.errors';
+import { RealtimeEventService } from '../common/realtime/realtime-event.service';
 
 /**
  * F-04's follow-on slice (docs/audit/GAP_REPORT.md) / Master TZ §15.1-15.2,
@@ -21,7 +22,16 @@ describe('RoomsService (integration)', () => {
   const roleAssignment = new RoleAssignmentService();
   const scheduler = new SchedulerService(prisma);
   const gameLifecycle = new GameLifecycleService(roleAssignment, scheduler);
-  const service = new RoomsService(prisma, commandRequests, gameLifecycle);
+  const realtime: { broadcastToGame: jest.Mock; sendToPlayer: jest.Mock } = {
+    broadcastToGame: jest.fn(),
+    sendToPlayer: jest.fn(),
+  };
+  const service = new RoomsService(
+    prisma,
+    commandRequests,
+    gameLifecycle,
+    realtime as unknown as RealtimeEventService,
+  );
 
   const TEST_TELEGRAM_PREFIX = 'rooms-test-';
   let createdUserIds: string[] = [];
@@ -58,6 +68,8 @@ describe('RoomsService (integration)', () => {
   };
 
   afterEach(async () => {
+    realtime.broadcastToGame.mockClear();
+    realtime.sendToPlayer.mockClear();
     if (createdRoomIds.length) {
       const games = await prisma.game.findMany({
         where: { roomId: { in: createdRoomIds } },
@@ -1738,6 +1750,254 @@ describe('RoomsService (integration)', () => {
       expect(assignments.map((a) => a.playerId).sort()).toEqual(
         players.map((p) => p.id).sort(),
       );
+    });
+  });
+
+  describe('realtime delivery (§20, OD-049)', () => {
+    /**
+     * A `CommandRequestService` whose `record` rejects after `findExisting`
+     * succeeds normally — forces each command's transaction to abort *after*
+     * its real write already ran inside it, the same rollback-proof pattern
+     * `VoteService`'s realtime phase-2 tests already established.
+     */
+    const brokenCommandRequests = (): CommandRequestService =>
+      ({
+        findExisting: jest.fn().mockResolvedValue(null),
+        record: jest.fn().mockRejectedValue(new Error('simulated failure after write')),
+        recoverReplay: jest.fn().mockResolvedValue(null),
+      }) as unknown as CommandRequestService;
+
+    const brokenService = () =>
+      new RoomsService(
+        prisma,
+        brokenCommandRequests(),
+        gameLifecycle,
+        realtime as unknown as RealtimeEventService,
+      );
+
+    it('createRoom broadcasts ROOM_CREATED with the CreatedRoom payload, post-commit', async () => {
+      const host = await makeUser();
+      const room = await createValidRoom(host.id);
+
+      expect(realtime.broadcastToGame).toHaveBeenCalledWith(room.gameId, 'ROOM_CREATED', room);
+    });
+
+    it('createRoom fires no event when the transaction rolls back', async () => {
+      const host = await makeUser();
+
+      await expect(
+        brokenService().createRoom({
+          userId: host.id,
+          clientRequestId: randomUUID(),
+          maxPlayers: 4,
+          rulesetMode: RulesetMode.NORMAL,
+          visibility: RoomVisibility.PRIVATE,
+        }),
+      ).rejects.toThrow('simulated failure after write');
+
+      const rooms = await prisma.room.findMany({ where: { creatorUserId: host.id } });
+      expect(rooms).toHaveLength(0); // the Room/Game/GamePlayer writes never survived the rollback
+      expect(realtime.broadcastToGame).not.toHaveBeenCalled();
+    });
+
+    it('joinRoom broadcasts PLAYER_JOINED with the JoinedRoom payload, and never re-broadcasts on replay', async () => {
+      const host = await makeUser();
+      const joiner = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 4 });
+      realtime.broadcastToGame.mockClear(); // drop the setup ROOM_CREATED call
+
+      const clientRequestId = randomUUID();
+      const result = await service.joinRoom({ userId: joiner.id, code: room.code, clientRequestId });
+      expect(realtime.broadcastToGame).toHaveBeenCalledWith(room.gameId, 'PLAYER_JOINED', result);
+
+      realtime.broadcastToGame.mockClear();
+      await service.joinRoom({ userId: joiner.id, code: room.code, clientRequestId }); // identical retry
+      expect(realtime.broadcastToGame).not.toHaveBeenCalled();
+    });
+
+    it('joinRoom fires no event when the transaction rolls back', async () => {
+      const host = await makeUser();
+      const joiner = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 4 });
+      realtime.broadcastToGame.mockClear();
+
+      const broken = brokenService();
+      await expect(
+        broken.joinRoom({ userId: joiner.id, code: room.code, clientRequestId: randomUUID() }),
+      ).rejects.toThrow('simulated failure after write');
+
+      const players = await prisma.gamePlayer.findMany({ where: { gameId: room.gameId } });
+      expect(players).toHaveLength(1); // only the host — the joiner's row never survived the rollback
+      expect(realtime.broadcastToGame).not.toHaveBeenCalled();
+    });
+
+    it('leaveRoom broadcasts PLAYER_LEFT with the LeftRoom payload', async () => {
+      const host = await makeUser();
+      const joiner = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 4 });
+      await service.joinRoom({ userId: joiner.id, code: room.code, clientRequestId: randomUUID() });
+      realtime.broadcastToGame.mockClear();
+
+      const result = await service.leaveRoom({
+        userId: joiner.id,
+        roomId: room.roomId,
+        clientRequestId: randomUUID(),
+      });
+
+      expect(realtime.broadcastToGame).toHaveBeenCalledWith(room.gameId, 'PLAYER_LEFT', result);
+    });
+
+    it('leaveRoom fires no event when the transaction rolls back', async () => {
+      const host = await makeUser();
+      const joiner = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 4 });
+      await service.joinRoom({ userId: joiner.id, code: room.code, clientRequestId: randomUUID() });
+      realtime.broadcastToGame.mockClear();
+
+      const broken = brokenService();
+      await expect(
+        broken.leaveRoom({ userId: joiner.id, roomId: room.roomId, clientRequestId: randomUUID() }),
+      ).rejects.toThrow('simulated failure after write');
+
+      const player = await prisma.gamePlayer.findFirstOrThrow({
+        where: { gameId: room.gameId, userId: joiner.id },
+      });
+      expect(player.lifeStatus).not.toBe('LEFT'); // the LEFT write never survived the rollback
+      expect(realtime.broadcastToGame).not.toHaveBeenCalled();
+    });
+
+    it('setReady broadcasts PLAYER_READY_CHANGED with the ReadySet payload', async () => {
+      const host = await makeUser();
+      const room = await createValidRoom(host.id);
+      realtime.broadcastToGame.mockClear();
+
+      const result = await service.setReady({
+        userId: host.id,
+        roomId: room.roomId,
+        clientRequestId: randomUUID(),
+        isReady: true,
+      });
+
+      expect(realtime.broadcastToGame).toHaveBeenCalledWith(room.gameId, 'PLAYER_READY_CHANGED', result);
+    });
+
+    it('setReady fires no event when the transaction rolls back', async () => {
+      const host = await makeUser();
+      const room = await createValidRoom(host.id);
+      realtime.broadcastToGame.mockClear();
+
+      const broken = brokenService();
+      await expect(
+        broken.setReady({ userId: host.id, roomId: room.roomId, clientRequestId: randomUUID(), isReady: true }),
+      ).rejects.toThrow('simulated failure after write');
+
+      const player = await prisma.gamePlayer.findFirstOrThrow({ where: { gameId: room.gameId, userId: host.id } });
+      expect(player.isReady).toBe(false); // the isReady write never survived the rollback
+      expect(realtime.broadcastToGame).not.toHaveBeenCalled();
+    });
+
+    it('transferHost broadcasts HOST_TRANSFERRED with the HostTransferred payload', async () => {
+      const host = await makeUser();
+      const joiner = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 4 });
+      const joined = await service.joinRoom({ userId: joiner.id, code: room.code, clientRequestId: randomUUID() });
+      realtime.broadcastToGame.mockClear();
+
+      const result = await service.transferHost({
+        userId: host.id,
+        roomId: room.roomId,
+        clientRequestId: randomUUID(),
+        targetPlayerId: joined.playerId,
+      });
+
+      expect(realtime.broadcastToGame).toHaveBeenCalledWith(room.gameId, 'HOST_TRANSFERRED', result);
+    });
+
+    it('transferHost fires no event when the transaction rolls back', async () => {
+      const host = await makeUser();
+      const joiner = await makeUser();
+      const room = await createValidRoom(host.id, { maxPlayers: 4 });
+      const joined = await service.joinRoom({ userId: joiner.id, code: room.code, clientRequestId: randomUUID() });
+      realtime.broadcastToGame.mockClear();
+
+      const broken = brokenService();
+      await expect(
+        broken.transferHost({
+          userId: host.id,
+          roomId: room.roomId,
+          clientRequestId: randomUUID(),
+          targetPlayerId: joined.playerId,
+        }),
+      ).rejects.toThrow('simulated failure after write');
+
+      const game = await prisma.game.findUniqueOrThrow({ where: { id: room.gameId } });
+      const hostPlayer = await prisma.gamePlayer.findFirstOrThrow({
+        where: { gameId: room.gameId, userId: host.id },
+      });
+      expect(game.hostPlayerId).toBe(hostPlayer.id); // the host-transfer write never survived the rollback
+      expect(realtime.broadcastToGame).not.toHaveBeenCalled();
+    });
+
+    it('startGame broadcasts PHASE_CHANGED (LOBBY -> ROLE_REVEAL, round 0), reusing phase 1\'s event', async () => {
+      const host = await makeUser();
+      const others = await Promise.all([makeUser(), makeUser(), makeUser()]);
+      const room = await createValidRoom(host.id, { maxPlayers: 8 });
+      for (const other of others) {
+        await service.joinRoom({ userId: other.id, code: room.code, clientRequestId: randomUUID() });
+      }
+      realtime.broadcastToGame.mockClear();
+
+      await service.startGame({ userId: host.id, roomId: room.roomId, clientRequestId: randomUUID() });
+
+      expect(realtime.broadcastToGame).toHaveBeenCalledWith(room.gameId, 'PHASE_CHANGED', {
+        from: 'LOBBY',
+        to: 'ROLE_REVEAL',
+        round: 0,
+      });
+    });
+
+    it('startGame fires no event when the transaction rolls back, even though role assignment already ran', async () => {
+      const host = await makeUser();
+      const others = await Promise.all([makeUser(), makeUser(), makeUser()]);
+      const room = await createValidRoom(host.id, { maxPlayers: 8 });
+      for (const other of others) {
+        await service.joinRoom({ userId: other.id, code: room.code, clientRequestId: randomUUID() });
+      }
+      realtime.broadcastToGame.mockClear();
+
+      const broken = brokenService();
+      await expect(
+        broken.startGame({ userId: host.id, roomId: room.roomId, clientRequestId: randomUUID() }),
+      ).rejects.toThrow('simulated failure after write');
+
+      const game = await prisma.game.findUniqueOrThrow({ where: { id: room.gameId } });
+      expect(game.status).toBe('LOBBY'); // the LOBBY -> ROLE_REVEAL write never survived the rollback
+      expect(game.currentPhase).toBe('LOBBY');
+
+      const assignments = await prisma.gameRoleAssignment.findMany({ where: { gameId: room.gameId } });
+      expect(assignments).toHaveLength(0); // role dealing rolled back too — no partial deal left behind
+
+      expect(realtime.broadcastToGame).not.toHaveBeenCalled();
+    });
+
+    it('a room event broadcast for one game never carries a different room\'s gameId (scoping)', async () => {
+      const hostA = await makeUser();
+      const hostB = await makeUser();
+      const roomA = await createValidRoom(hostA.id);
+      const roomB = await createValidRoom(hostB.id);
+      realtime.broadcastToGame.mockClear();
+
+      await service.setReady({ userId: hostA.id, roomId: roomA.roomId, clientRequestId: randomUUID(), isReady: true });
+
+      expect(realtime.broadcastToGame).toHaveBeenCalledTimes(1);
+      const [gameId] = realtime.broadcastToGame.mock.calls[0];
+      expect(gameId).toBe(roomA.gameId);
+      expect(gameId).not.toBe(roomB.gameId);
+      // Real cross-socket isolation for `game:{gameId}` is already proven at
+      // the transport level by realtime.gateway.spec.ts's "scopes a broadcast
+      // to game:{gameId}" test (phase 1) — room events reuse that same
+      // channel/mechanism unchanged (OD-049), so this level (which gameId a
+      // room command actually broadcasts to) is what's new here to verify.
     });
   });
 });

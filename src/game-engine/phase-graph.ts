@@ -18,15 +18,14 @@ export function isTransientPhase(phase: GamePhaseName): boolean {
 }
 
 /**
- * The domain facts §10.2's diagram branches on. `deathsOccurred`,
- * `executionOccurred`, and `hasWinner` can only ever be produced by
- * night-action resolution, vote-counting, and the win evaluator — none of
- * which exist yet (explicitly out of scope for the phase-transition slice).
- * Every caller in this codebase currently passes the trivial context
- * (`deathsOccurred: false, executionOccurred: false, hasWinner: false`),
- * which is why `LAST_WORD`, `EXECUTION`, and the winner branch of
- * `GAME_OVER` are unreachable in practice today — a visible consequence of
- * those slices not existing yet, not a guess about their eventual behavior.
+ * The domain facts §10.2's diagram branches on. `PhaseTransitionService`
+ * supplies a real `deathsOccurred` from `NightResolutionService`'s outcome
+ * (§17.4) when leaving NIGHT_RESOLUTION, a real `executionOccurred`/
+ * `triggeredByVote` from `VoteResolutionService`'s outcome (§16/§10.4) when
+ * leaving VOTE_RESOLUTION / re-entering LAST_WORD's own outgoing edge, and a
+ * real `hasWinner` from `win-evaluator.ts`'s pure `evaluateWinCondition`
+ * (§16.1, OD-046) at NIGHT_RESOLUTION and WIN_CHECK — every branch of the
+ * diagram, including every `GAME_OVER`/winner path, is now reachable.
  */
 export interface PhaseTransitionContext {
   lastWordEnabled: boolean;

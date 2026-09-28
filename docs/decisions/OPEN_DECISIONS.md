@@ -499,6 +499,350 @@ literal transcription. It is documented in the migration and
 This is an addition to §19/§21 (v5.0) and should be folded into the Master TZ
 at the next revision, same as OD-035–042.
 
+### OD-044 — Night-Action Edge Cases: Sheriff Shot, Maniac Self-Target, Early-Completion Gate · RESOLVED
+Context: §12.3/§12.4/§17 fully specify the night-action model and the 9-step
+resolution priority, but three specific interactions are not settled by the
+text. Three sub-points, resolved together:
+
+1. **Sheriff's shot vs. target team.** §12.4 step 7's note reads: "...one
+   from Sheriff's shot if the Sheriff hit an innocent per OD-002x, see
+   note)". No `OD-002x` exists anywhere in MASTER_TZ.md or this file — it is
+   a dangling reference with no recoverable resolution text (distinct from
+   `OD-002`, "Mafia kill policy," which governs something else entirely).
+   Decision: treat it as a spec-text artifact. A Sheriff's `SHOOT` is a
+   standard kill attempt — subject to Doctor/Bodyguard protection exactly
+   like any other pending kill (as the same note's own preceding sentence
+   already states) — with no different outcome based on whether the target
+   turns out to be `MAFIA`, `TOWN`, or `NEUTRAL`.
+2. **Maniac self-targeting.** §12.3's Maniac row ("alive, any team including
+   Mafia") never says "not self," unlike every other action ability, which
+   either states "not self" explicitly or — Doctor's `PROTECT` alone —
+   explicitly carves out self as allowed. Decision: Maniac cannot target
+   itself with `KILL`. Doctor's safety ability is the sole designed
+   exception to "not self"; a self-`KILL` option has no coherent purpose in
+   a design with no other suicide mechanic.
+3. **"All actions submitted" early-completion gate (§10.2).** The diagram
+   names the trigger but not what "all" means once Don has an optional
+   second ability (`CHECK`, "at most one per night") and Sheriff's only
+   ability is once-per-game. Decision: `NIGHT` advances early once every
+   `ALIVE` player whose role still has a *usable* night ability has
+   submitted their **primary** slot (Mafia/Don/Maniac: `KILL`, Detective:
+   `INVESTIGATE`, Sheriff: `SHOOT`, Doctor: `PROTECT`, Bodyguard: `GUARD`,
+   Journalist: `INVESTIGATE_PAIR`). A Sheriff who has already spent their
+   one-time `SHOOT` is removed from the expected-submitters set from that
+   point on — they have nothing left to submit, ever. Don's optional `CHECK`
+   never gates early completion, since abstaining from an optional ability
+   is indistinguishable from still deciding; requiring it would pressure
+   clients into auto-submitting a `CHECK` every night just to unblock the
+   phase for everyone else, making an optional ability de facto mandatory.
+
+A fourth candidate point — whether an ordinary Mafia member (or the Don) may
+abstain from submitting a `KILL` vote on a given night — is **not** a new
+open decision: OD-015 (resolved) already establishes the general principle
+that absence is a legitimate outcome for any role's action ("They simply
+submit no action/vote for phases they miss... No automatic LEFT transition,
+no automatic action, no forced removal"), which extends without
+modification to a connected player who simply chooses not to act. An
+abstaining Mafia member's vote is not counted toward the majority tally in
+§12.4 step 2.
+
+This is an addition to §12.3/§12.4/§10.2 and should be folded into the
+Master TZ at the next revision, same as OD-035–043.
+
+### OD-045 — Day-Vote Self-Targeting · RESOLVED
+Context: §16/OD-018/OD-020 fully specify vote tie policy and vote
+visibility/change mechanics, but nothing in the Master TZ states whether a
+player may cast their `VOTING`-phase vote for themselves. This is the same
+class of gap OD-044b resolved for Maniac's `KILL` — a target-eligibility rule
+the spec is silent on, not a design question requiring product judgment about
+gameplay balance.
+
+Decision: self-voting is allowed. Unlike every §12.3 night ability (each of
+which explicitly states "not self" except Doctor's designed exception), the
+day vote has no per-role target-restriction table at all — there is no
+enumerated "not self" rule to be silent about the way Maniac's row was.
+Classic Mafia/Werewolf voting conventionally permits self-voting (a
+credible-innocent play to "clear" oneself), and prohibiting it would be
+inventing a restriction with no textual basis, the opposite error from
+OD-044b's reasoning (there, every sibling ability's explicit "not self"
+made silence on Maniac read as an oversight, not a deliberate opening).
+
+This is an addition to §16/the Master TZ's voting section and should be
+folded into the Master TZ at the next revision, same as OD-035–044.
+
+### OD-046 — Win Evaluator: Simultaneous Three-Faction Wipeout · RESOLVED
+Context: §16.1's evaluator is given as an explicit if/else-if chain, quoted
+here in full:
+
+```text
+if maniacAlive == 1 AND mafiaAlive == 0 AND townAlive == 0
+    -> MANIAC wins
+else if mafiaAlive == 0 AND maniacAlive == 0
+    -> TOWN wins
+else if mafiaAlive >= (townAlive + maniacAlive) AND maniacAlive == 0
+    -> MAFIA wins
+else if mafiaAlive == 1 AND maniacAlive == 1 AND townAlive == 0
+    -> DUEL: no winner yet ...
+         (... if both are somehow eliminated simultaneously,
+          declared a DRAW — game ends with winner_team = null, summary flag "draw")
+else
+    -> no winner, continue
+```
+
+Two internal inconsistencies, both reachable given the night-resolution
+engine already built (§12.4): a duel's last Mafia-team survivor and the
+Maniac can submit mutual `KILL`s on the same night, and with no Doctor/
+Bodyguard alive to intercept either (townAlive is already 0 in a duel), both
+pending kills resolve — a genuine simultaneous double-elimination, not a
+hypothetical.
+
+1. **The pseudocode's branch order never reaches the prose's DRAW outcome.**
+   The literal chain checks `mafiaAlive == 0 AND maniacAlive == 0 -> TOWN
+   wins` (branch 2) with no `townAlive` condition at all. A simultaneous
+   wipeout of all three factions (`mafiaAlive == maniacAlive == townAlive ==
+   0`) satisfies branch 2 exactly as written and would be declared a TOWN
+   win by the literal code — directly contradicting the very next paragraph's
+   "declared a DRAW" for exactly this scenario. There is no explicit DRAW
+   condition anywhere in the quoted chain; the prose describes a branch the
+   pseudocode never encodes.
+
+   Decision: insert an explicit DRAW check (`mafiaAlive == 0 AND maniacAlive
+   == 0 AND townAlive == 0`) ahead of branch 2's `TOWN wins` check. This is
+   the minimal change reconciling the code with the prose immediately below
+   it, and the prose is unambiguous that this exact case must not be a TOWN
+   win.
+
+2. **DRAW's representation conflicts across the same section.** §16.1's prose
+   says the draw case ends "with winner_team = null, summary flag 'draw'."
+   §16.3, two paragraphs later, states the column's domain outright:
+   "`game_results.winner_team ∈ {TOWN, MAFIA, NEUTRAL, DRAW}`" — DRAW is a
+   member of the enumerated domain, not a null-plus-flag encoding, and no
+   "summary flag" column is named anywhere in §33's schema tables.
+
+   Decision: `game_results.winner_team` is a 4-valued enum (`TOWN`, `MAFIA`,
+   `NEUTRAL`, `DRAW`), no separate flag column. §16.3's later, schema-specific
+   statement governs over §16.1's looser prose paraphrase of the same
+   outcome; building a distinct "summary flag" field is also out of this
+   slice's scope (no post-game summary JSON is specified with named fields
+   beyond `winner_team` — see the win-evaluator slice's non-goals).
+
+This is an addition to §16.1/§16.3 and should be folded into the Master TZ at
+the next revision, same as OD-035–045.
+
+### OD-047 — Realtime Event Catalog for the First Delivery Slice · RESOLVED
+Context: §20 states the transport ("Unchanged... from v5.0 §26.1–26.2, Socket.IO,
+`/game` namespace, server-side-only room joins, JWT handshake auth, GamePlayer
+resolution before any room join") and the room-naming scheme
+(`game:{gameId}`, `game:{gameId}:player:{playerId}`, `game:{gameId}:team:{TEAM}`,
+plus v6's new chat rooms), but the actual **event name/payload catalog** lives
+in "v5.0 §18.5's table," which §17.5 explicitly extends rather than restates —
+and v5.0's text is not present anywhere in this repository (same
+carry-forward-gap class already hit for `game_actions`/`game_votes`/
+`game_results`'s column shapes, OD-041/OD-046's precedent).
+
+This slice is also deliberately narrower than "the realtime layer": per the
+task's own framing, it ships phase-transition + `GAME_FINISHED` broadcasts
+only, deferring private per-role night-action results (§17.5's
+`SHERIFF_RESULT`/`DON_CHECK_RESULT`/`GUARD_CONSUMED`/`JOURNALIST_RESULT`),
+`VOTE_CAST` (OD-020a), and room/lobby events to a follow-up slice — seven
+distinct write-paths in one slice was assessed as too large to review and test
+soundly at once (see the final report's self-assessment).
+
+Decision, scoped to exactly what ships now:
+1. **Event names**: `PHASE_CHANGED` (`{from, to, round}`, broadcast to
+   `game:{gameId}`, fired once per externally-observable `advancePhase` call
+   that actually advances — not once per internal transient-phase hop, since
+   `NIGHT_RESOLUTION`/`VOTE_RESOLUTION`/`EXECUTION`/`WIN_CHECK` "never survive
+   a commit" (§10.1) and are equally invisible to a polling client reading
+   `games.current_phase`) and `GAME_FINISHED` (`{winnerTeam}`, broadcast to
+   `game:{gameId}`, fired once when `PHASE_CHANGED.to === GAME_OVER`).
+   Chosen to name exactly the two facts a polling client would otherwise have
+   to notice via `GET /games/:gameId` polling — no new information, purely a
+   push shortcut for existing REST-visible state (§20's realtime-is-additive
+   principle).
+2. **No sequence numbers / replay for these two events.** §21's "snapshot →
+   WS connect with `lastSequence` → replay or resync" describes an
+   event-sequence mechanism this codebase has no backing store for yet (no
+   `game_events` table exists — that is itself unbuilt infrastructure, not
+   this slice's job to retrofit). A client that is disconnected when
+   `PHASE_CHANGED`/`GAME_FINISHED` fires simply does not receive it and must
+   fall back to its next REST poll — explicitly logged as a known gap, per
+   this slice's own non-goals, rather than building speculative backlog
+   infrastructure to satisfy a replay algorithm whose storage layer doesn't
+   exist.
+3. **Connection protocol**: the client supplies both a bearer JWT (issued by
+   the existing `/auth/telegram` flow, `handshake.auth.token`) and a
+   `gameId` (`handshake.auth.gameId`) at connect time. The server verifies
+   the JWT, resolves `GamePlayer(gameId, userId)`, and only then joins
+   `game:{gameId}` and `game:{gameId}:player:{playerId}` — matching §20's
+   "GamePlayer resolution before any room join" literally. A socket that
+   fails either check is disconnected immediately, no partial room
+   membership. This reuses the exact JWT the HTTP API already issues/verifies
+   (same `JWT_SECRET`, same `{sub, telegramId}` payload shape as
+   `JwtStrategy`) rather than inventing a second auth scheme.
+
+This is an addition to §17.5/§20/§21 and should be folded into the Master TZ
+at the next revision, same as OD-035–046.
+
+### OD-048 — Missing Private Event Names: Detective and Doctor · RESOLVED
+Context: §17.5's private-event catalog names exactly four events —
+`SHERIFF_RESULT`, `DON_CHECK_RESULT`, `GUARD_CONSUMED`, `JOURNALIST_RESULT` —
+covering Sheriff `SHOOT`, Don `CHECK`, Bodyguard `GUARD`, and Journalist
+`INVESTIGATE_PAIR`. `NightResolutionService.resolveRound` (built in the
+night-action slice) already produces a private per-actor result for two more
+action types §12.3's "private information received" column also promises:
+Detective's `INVESTIGATE` (`{flag: 'MAFIA'|'NOT_MAFIA'}`) and Doctor's
+`PROTECT` (`{applied: true}`, OD-006's silent confirmation). Neither has a
+named event in §17.5's catalog — the list is confirmed **not exhaustive**
+relative to what the already-built resolution pipeline actually produces,
+not a sign these two roles get no private event at all (§12.3 already
+establishes they receive private information; only the *event name* for
+delivering it over the socket is missing).
+
+Decision: two additional event names, same `{ROLE}_RESULT`/`{ROLE}_ACTION`
+naming convention as the existing four:
+- `DETECTIVE_RESULT` — Detective's `INVESTIGATE`, payload `{flag}` (identical
+  shape to what's already persisted in `GameAction.result` and returned by
+  `GET .../night-actions/mine`).
+- `DOCTOR_PROTECT_RESULT` — Doctor's `PROTECT`, payload `{applied}` (same
+  reasoning).
+
+No event exists for Mafia/Don/Maniac `KILL` or for a Mafia member's own vote
+submission — §17.5 names none, and `NightResolutionService` itself pushes no
+`ActionResult` for `KILL` (confirmed by reading its resolution code): a kill
+submission has no private feedback to its actor beyond the outcome already
+covered by the (separately out-of-scope, still-deferred) public death
+event(s).
+
+This is an addition to §17.5 and should be folded into the Master TZ at the
+next revision, same as OD-035–047.
+
+### OD-049 — Room/Lobby Realtime Events: Channel Scope, Names, Payloads · RESOLVED
+Context: the realtime phase-2 report assessed room/lobby events as needing
+"its own `room:{roomId}`-scoped realtime channel" not present in §20's
+naming scheme, and deferred the whole area on that basis. Re-reading §8/§15
+in full (not just §20) corrects that assessment:
+
+**§8.4** (verbatim): "Membership, host authority, and every gameplay
+permission resolve exclusively through `GamePlayer`... the only change is
+that the surrounding context object is `Room`, not `TelegramGroup`."
+**§15.1** (verbatim): "On success: `Room` row + `Game` row (`status =
+LOBBY`), creator inserted as `GamePlayer` and `host_player_id`..." — confirmed
+against `RoomsService.createRoomTransaction`'s actual code: a `Room` and its
+`Game` (in `LOBBY` status) are created **atomically, in the same
+transaction**, and every subsequent room member (`joinRoomTransaction`) is
+inserted as a `GamePlayer` row scoped to that same `gameId`. There is no
+"pre-Game" lobby state in this data model at all — the lobby **is** a `Game`
+row, just one whose `status` happens to be `LOBBY` instead of `RUNNING`. Every
+one of `RoomsService`'s six response DTOs (`CreatedRoom`, `JoinedRoom`,
+`LeftRoom`, `ReadySet`, `HostTransferred`, `GameStarted`) already carries a
+`gameId` field, confirming the code agrees with this reading.
+
+Decision:
+1. **No new channel.** `game:{gameId}` (§20's existing, already-implemented
+   scope) is the correct broadcast scope for room/lobby events — a client
+   connects to it once, at room-creation/join time, using the `gameId`
+   already returned by `POST /rooms`/`POST /rooms/:code/join`, and **stays
+   connected through the entire lifecycle** (`LOBBY` → `ROLE_REVEAL` →
+   `RUNNING` → ... → `GAME_OVER`) — one channel, one connection, no
+   reconnect/rejoin at the `StartGame` boundary, because it is the same
+   `gameId` throughout. This corrects phase 2's assessment; no
+   `room:{roomId}` scheme, no gateway change, no new `RealtimeEventService`
+   method — `broadcastToGame` as built in phase 1 is already sufficient.
+2. **Event names/payloads** (none named in §15.1–15.3 beyond "`ROOM_CREATED`/
+   `GAME_CREATED` events" at creation, with no payload spec given — same
+   carry-forward-gap class as OD-047/048): each event reuses its command's
+   already-computed response DTO verbatim, the same "duplicates a pollable
+   endpoint, invents no new shape" principle OD-047/048 already established.
+   - `ROOM_CREATED` (create) — payload = `CreatedRoom`. §15.1 names both
+     `ROOM_CREATED` and `GAME_CREATED`; this codebase creates Room+Game as one
+     atomic aggregate op with one response object, so one event carries both
+     facts rather than two events for a single write — inventing a second,
+     differently-shaped event for the same atomic write would add a
+     distinction with no payload difference to justify it. In practice no
+     other socket can be connected to `game:{gameId}` yet at creation time
+     (the creator's own socket, if connected at all, already has this data
+     from the HTTP response) — wired for spec-fidelity and forward
+     consistency, not because it currently reaches a second listener.
+   - `PLAYER_JOINED` (join) — payload = `JoinedRoom`.
+   - `PLAYER_LEFT` (leave) — payload = `LeftRoom`.
+   - `PLAYER_READY_CHANGED` (setReady) — payload = `ReadySet`.
+   - `HOST_TRANSFERRED` (transferHost) — payload = `HostTransferred`.
+   - `startGame` emits no new bespoke event. It performs the `LOBBY ->
+     ROLE_REVEAL` phase write directly (via `GameLifecycleService.startGame`,
+     not through `PhaseTransitionService.advancePhase`), so phase 1's
+     `PHASE_CHANGED` broadcast does **not** already cover it — confirmed by
+     reading the code, not assumed. Rather than invent a seventh event name,
+     `startGame` broadcasts the *same* `PHASE_CHANGED` event phase 1 already
+     defined (`{from: 'LOBBY', to: currentPhase, round: 0}`, OD-042's round-0
+     convention), so a connected client's phase-change handling stays uniform
+     regardless of which service triggered the transition.
+3. **Public-listing (`GET /rooms/public`) stays poll-only.** §8.2 describes it
+   as a paginated, rate-limited discovery/browse endpoint — nothing in §8.2
+   or §20 names a realtime channel for it, and a browsing client is by
+   definition not yet a `GamePlayer` of any specific room it's browsing, so
+   it cannot pass the existing (and intentionally unchanged, per this slice's
+   non-goals) per-game membership check the gateway's auth middleware
+   performs. Building this would need an entirely different, unscoped/global
+   channel model — out of scope here, logged as a known gap, not attempted.
+
+This is an addition to §15/§20 and should be folded into the Master TZ at the
+next revision, same as OD-035–048.
+
+### OD-050 — MULTIPLE_DEATHS: One-Death and Zero-Death Nights, Payload Shape · RESOLVED
+Context: §17.5 (verbatim): "`MULTIPLE_DEATHS` (PUBLIC, when more than one
+death occurs the same night — payload is a list, not a repeated single-death
+event, so ordering never implies causation)." This is the only public
+night-resolution event §17.5 names. It does not say what, if anything, is
+broadcast when exactly one player dies, or when nobody dies. OD-024
+(already resolved) separately establishes that death events carry no role
+field at all ("PLAYER_DIED/PLAYER_EXECUTED events carry no role field") —
+those two names appear there only as an illustrative example while resolving
+the *role-reveal* question, not as an event this codebase has ever built or
+that any OD actually mandates; grepping `src/` confirms neither name exists
+anywhere in code before this slice.
+
+Decision:
+1. **The event name is taken literally.** §17.5's own wording — "when more
+   than one death occurs" — is the trigger condition, not just a label:
+   `MULTIPLE_DEATHS` fires if and only if `deaths.length > 1` for that night's
+   resolution. `NightResolutionService.resolveRound` already computes this
+   list (`resolveNightActions`'s `deaths: string[]`, deduplicated player ids,
+   §12.4/OD-031 cap of 3) — reused verbatim as the payload, no new shape:
+   `{ deaths: string[] }`. Per OD-024, no role field is included.
+2. **Exactly one death: no public event fires this slice.** §17.5 names no
+   single-death public event, and none exists anywhere in code today. A
+   connected client already receives `PHASE_CHANGED` (`NIGHT ->
+   NIGHT_RESOLUTION -> ...`) on the same night, and role-bearing players
+   affected by the death receive their own private per-actor results
+   (§17.5/OD-048) where applicable (e.g. a Sheriff learns `{died: true}`
+   from their own `SHERIFF_RESULT`); a fully public "someone died" surface
+   for the single-death case is a real gap, not silently invented here — it
+   would need its own OD if/when a client actually needs it (candidate name
+   `PLAYER_DIED`, not decided here).
+3. **Zero deaths: no event, as expected** — nothing to announce; not a real
+   gap, just the base case of rule 1.
+4. **Execution (day-vote) deaths are out of scope for this event.** §17.5
+   only names `MULTIPLE_DEATHS` in the night-resolution section; no
+   equivalent public event is named for `EXECUTION`. An executed player's
+   fate is already publicly derivable from `VOTE_CAST`'s live tally
+   (OD-020a) plus the following `PHASE_CHANGED`, so this is treated as
+   already covered rather than a gap requiring a new event — consistent with
+   not inventing behavior §17.5 doesn't name.
+5. **Emission point/ordering:** wired into `PhaseTransitionService.
+   advancePhase`'s existing post-commit broadcast block (same as
+   `PHASE_CHANGED`/`GAME_FINISHED`), emitted immediately after those two,
+   still gated on the same `await this.prisma.$transaction(...)` having
+   already resolved. §17.5/§20 state no required ordering relative to
+   `PHASE_CHANGED`, and clients consume each event independently off the
+   same already-committed state, so no ordering is load-bearing — placed
+   after `PHASE_CHANGED` purely for source locality, not because ordering
+   matters.
+
+This is an addition to §17.5 and should be folded into the Master TZ at the
+next revision, same as OD-035–049.
+
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
 None. Every previously blocking decision is resolved (see the addendum above).
@@ -527,6 +871,6 @@ None. Every previously blocking decision is resolved (see the addendum above).
   2026-09-25 addendum resolved them.)
 - OD-031–OD-034 are new in v6.0 (MASTER_TZ.md §42.2/§42.1) and non-blocking, each with a
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
-- Total: 33 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
-  OD-037/OD-038/OD-039/OD-040/OD-041/OD-042/OD-043 recorded 2026-09-26), 0
-  open+blocking, 10 open+non-blocking (43 IDs, OD-001 through OD-043).
+- Total: 40 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
+  OD-037 through OD-050 recorded 2026-09-26/27), 0 open+blocking,
+  10 open+non-blocking (50 IDs, OD-001 through OD-050).

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { GamePhaseName, GameStatus, LifeStatus, Prisma } from '@prisma/client';
+import { GamePhaseName, GameStatus, LifeStatus, Prisma, WinnerTeam } from '@prisma/client';
 import { SchedulerService } from '../common/scheduling/scheduler.service';
 import { RoleAssignmentService } from './role-assignment.service';
 import { RoleDistribution } from './roles';
@@ -49,6 +49,13 @@ export interface TransitionPhaseInput {
   endsAt: Date | null;
   /** §9: GAME_OVER also finalizes Game.status/finishedAt. */
   gameOver: boolean;
+  /**
+   * §16.3/§10.3: required whenever `gameOver` is true — `GAME_OVER` is only
+   * ever reached via `computeNextPhase`'s `ctx.hasWinner` branches (see
+   * `phase-graph.ts`), so a winner (or `DRAW`, OD-046) always exists by the
+   * time this is set. Must be omitted/null when `gameOver` is false.
+   */
+  winnerTeam?: WinnerTeam | null;
 }
 
 /**
@@ -157,9 +164,47 @@ export class GameLifecycleService {
       },
     });
 
+    if (input.gameOver) {
+      if (!input.winnerTeam) {
+        throw new Error(
+          `GameLifecycleService.transitionPhase: GAME_OVER for game ${input.gameId} with no winnerTeam (§16.3 invariant violated)`,
+        );
+      }
+
+      await tx.gameResult.create({
+        data: { gameId: input.gameId, winnerTeam: input.winnerTeam },
+      });
+    }
+
     if (input.endsAt !== null) {
       await this.enqueuePhaseAdvanceCheck(tx, input.gameId, input.endsAt);
     }
+  }
+
+  /**
+   * §17.4/§16/§10.3: the one `game_players.life_status` write §10.3 reserves
+   * to the Game Engine, shared by both death sources this codebase has today
+   * — `NightResolutionService` (§17.4, `resolveNightActions`'s deaths) and
+   * `VoteResolutionService` (§16/§10.4, the day's execution target). Neither
+   * caller's death-application logic differs from the other's (both reduce
+   * to "these player ids are now DEAD"), so this is one shared method, not a
+   * pair of near-duplicates. The `lifeStatus: ALIVE` guard makes a duplicate
+   * call idempotent — dying twice is a no-op, not an error — matching
+   * `startGame`'s same defensive shape for its own bulk `ALIVE` write.
+   */
+  async applyDeaths(
+    tx: Prisma.TransactionClient,
+    gameId: string,
+    playerIds: string[],
+  ): Promise<void> {
+    if (playerIds.length === 0) {
+      return;
+    }
+
+    await tx.gamePlayer.updateMany({
+      where: { id: { in: playerIds }, gameId, lifeStatus: LifeStatus.ALIVE },
+      data: { lifeStatus: LifeStatus.DEAD },
+    });
   }
 
   /**

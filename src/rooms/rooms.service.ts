@@ -11,6 +11,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { CommandRequestService } from '../common/command-requests/command-request.service';
 import { GameLifecycleService } from '../game-engine/game-lifecycle.service';
+import { RealtimeEventService } from '../common/realtime/realtime-event.service';
 import { RoomErrorCode, RoomException } from './rooms.errors';
 import {
   computePhaseDurationsSec,
@@ -35,6 +36,19 @@ const ENDPOINT_START_GAME = 'POST /rooms/:id/start';
 
 /** A GamePlayer counts toward capacity/roster only while not LEFT (OD-037). */
 const ACTIVE_PLAYER_FILTER = { not: LifeStatus.LEFT };
+
+/**
+ * §20/OD-049: a `*Transaction` method's internal result, distinguishing an
+ * actual write (fresh cast/create/update) from either idempotency-replay path
+ * (`commandRequests.findExisting`'s in-transaction short-circuit, or
+ * `recoverReplay`'s post-collision re-read) — only the former should ever
+ * broadcast an event, same discipline `VoteService.castVote` already
+ * established in the realtime phase-2 slice.
+ */
+interface WithEmit<T> {
+  response: T;
+  isNewWrite: boolean;
+}
 
 export interface CreateRoomInput {
   userId: string;
@@ -176,6 +190,7 @@ export class RoomsService {
     private readonly prisma: PrismaService,
     private readonly commandRequests: CommandRequestService,
     private readonly gameLifecycle: GameLifecycleService,
+    private readonly realtime: RealtimeEventService,
   ) {}
 
   /**
@@ -193,7 +208,13 @@ export class RoomsService {
     };
 
     try {
-      return await this.createRoomTransaction(input, key);
+      const { response, isNewWrite } = await this.createRoomTransaction(input, key);
+
+      if (isNewWrite) {
+        this.realtime.broadcastToGame(response.gameId, 'ROOM_CREATED', response);
+      }
+
+      return response;
     } catch (error) {
       const replay = await this.commandRequests.recoverReplay(
         this.prisma,
@@ -212,12 +233,12 @@ export class RoomsService {
   private async createRoomTransaction(
     input: CreateRoomInput,
     key: { userId: string; endpoint: string; clientRequestId: string },
-  ): Promise<CreatedRoom> {
+  ): Promise<WithEmit<CreatedRoom>> {
     return this.prisma.$transaction(async (tx) => {
       const replay = await this.commandRequests.findExisting(tx, key);
 
       if (replay) {
-        return replay.body as unknown as CreatedRoom;
+        return { response: replay.body as unknown as CreatedRoom, isNewWrite: false };
       }
 
       const alreadyHosting = await tx.room.findFirst({
@@ -269,7 +290,7 @@ export class RoomsService {
         body: response as unknown as Prisma.InputJsonValue,
       });
 
-      return response;
+      return { response, isNewWrite: true };
     });
   }
 
@@ -389,7 +410,13 @@ export class RoomsService {
     };
 
     try {
-      return await this.joinRoomTransaction(input, room, gameId, key);
+      const { response, isNewWrite } = await this.joinRoomTransaction(input, room, gameId, key);
+
+      if (isNewWrite) {
+        this.realtime.broadcastToGame(gameId, 'PLAYER_JOINED', response);
+      }
+
+      return response;
     } catch (error) {
       const replay = await this.commandRequests.recoverReplay(
         this.prisma,
@@ -410,7 +437,7 @@ export class RoomsService {
     room: { id: string; maxPlayers: number },
     gameId: string,
     key: { userId: string; endpoint: string; clientRequestId: string },
-  ): Promise<JoinedRoom> {
+  ): Promise<WithEmit<JoinedRoom>> {
     return this.prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<{ id: string; status: string }[]>`
         SELECT id, status FROM games WHERE id = ${gameId}::uuid FOR UPDATE
@@ -423,7 +450,7 @@ export class RoomsService {
       const replay = await this.commandRequests.findExisting(tx, key);
 
       if (replay) {
-        return replay.body as unknown as JoinedRoom;
+        return { response: replay.body as unknown as JoinedRoom, isNewWrite: false };
       }
 
       if (locked[0].status !== 'LOBBY') {
@@ -470,7 +497,7 @@ export class RoomsService {
         body: response as unknown as Prisma.InputJsonValue,
       });
 
-      return response;
+      return { response, isNewWrite: true };
     });
   }
 
@@ -490,7 +517,13 @@ export class RoomsService {
     };
 
     try {
-      return await this.leaveRoomTransaction(input, room, gameId, key);
+      const { response, isNewWrite } = await this.leaveRoomTransaction(input, room, gameId, key);
+
+      if (isNewWrite) {
+        this.realtime.broadcastToGame(gameId, 'PLAYER_LEFT', response);
+      }
+
+      return response;
     } catch (error) {
       const replay = await this.commandRequests.recoverReplay(
         this.prisma,
@@ -511,7 +544,7 @@ export class RoomsService {
     room: { id: string },
     gameId: string,
     key: { userId: string; endpoint: string; clientRequestId: string },
-  ): Promise<LeftRoom> {
+  ): Promise<WithEmit<LeftRoom>> {
     return this.prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<{ id: string; status: string }[]>`
         SELECT id, status FROM games WHERE id = ${gameId}::uuid FOR UPDATE
@@ -524,7 +557,7 @@ export class RoomsService {
       const replay = await this.commandRequests.findExisting(tx, key);
 
       if (replay) {
-        return replay.body as unknown as LeftRoom;
+        return { response: replay.body as unknown as LeftRoom, isNewWrite: false };
       }
 
       if (locked[0].status !== 'LOBBY') {
@@ -604,7 +637,7 @@ export class RoomsService {
         body: response as unknown as Prisma.InputJsonValue,
       });
 
-      return response;
+      return { response, isNewWrite: true };
     });
   }
 
@@ -622,7 +655,13 @@ export class RoomsService {
     };
 
     try {
-      return await this.setReadyTransaction(input, room, gameId, key);
+      const { response, isNewWrite } = await this.setReadyTransaction(input, room, gameId, key);
+
+      if (isNewWrite) {
+        this.realtime.broadcastToGame(gameId, 'PLAYER_READY_CHANGED', response);
+      }
+
+      return response;
     } catch (error) {
       const replay = await this.commandRequests.recoverReplay(
         this.prisma,
@@ -643,7 +682,7 @@ export class RoomsService {
     room: { id: string },
     gameId: string,
     key: { userId: string; endpoint: string; clientRequestId: string },
-  ): Promise<ReadySet> {
+  ): Promise<WithEmit<ReadySet>> {
     return this.prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<{ id: string; status: string }[]>`
         SELECT id, status FROM games WHERE id = ${gameId}::uuid FOR UPDATE
@@ -656,7 +695,7 @@ export class RoomsService {
       const replay = await this.commandRequests.findExisting(tx, key);
 
       if (replay) {
-        return replay.body as unknown as ReadySet;
+        return { response: replay.body as unknown as ReadySet, isNewWrite: false };
       }
 
       if (locked[0].status !== 'LOBBY') {
@@ -694,7 +733,7 @@ export class RoomsService {
         body: response as unknown as Prisma.InputJsonValue,
       });
 
-      return response;
+      return { response, isNewWrite: true };
     });
   }
 
@@ -715,7 +754,13 @@ export class RoomsService {
     };
 
     try {
-      return await this.transferHostTransaction(input, room, gameId, key);
+      const { response, isNewWrite } = await this.transferHostTransaction(input, room, gameId, key);
+
+      if (isNewWrite) {
+        this.realtime.broadcastToGame(gameId, 'HOST_TRANSFERRED', response);
+      }
+
+      return response;
     } catch (error) {
       const replay = await this.commandRequests.recoverReplay(
         this.prisma,
@@ -736,7 +781,7 @@ export class RoomsService {
     room: { id: string },
     gameId: string,
     key: { userId: string; endpoint: string; clientRequestId: string },
-  ): Promise<HostTransferred> {
+  ): Promise<WithEmit<HostTransferred>> {
     return this.prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<{ id: string; status: string }[]>`
         SELECT id, status FROM games WHERE id = ${gameId}::uuid FOR UPDATE
@@ -749,7 +794,7 @@ export class RoomsService {
       const replay = await this.commandRequests.findExisting(tx, key);
 
       if (replay) {
-        return replay.body as unknown as HostTransferred;
+        return { response: replay.body as unknown as HostTransferred, isNewWrite: false };
       }
 
       if (locked[0].status !== 'LOBBY') {
@@ -815,7 +860,7 @@ export class RoomsService {
         body: response as unknown as Prisma.InputJsonValue,
       });
 
-      return response;
+      return { response, isNewWrite: true };
     });
   }
 
@@ -839,7 +884,23 @@ export class RoomsService {
     };
 
     try {
-      return await this.startGameTransaction(input, room, gameId, key);
+      const { response, isNewWrite } = await this.startGameTransaction(input, room, gameId, key);
+
+      if (isNewWrite) {
+        // §20/OD-047/OD-049: reuses phase 1's `PHASE_CHANGED` event verbatim
+        // — this LOBBY -> ROLE_REVEAL write goes through
+        // `GameLifecycleService.startGame`, not `PhaseTransitionService.
+        // advancePhase`, so it isn't already covered by that service's own
+        // broadcast. Round is always 0 here (OD-042: round increments only
+        // entering NIGHT; ROLE_REVEAL is round 0).
+        this.realtime.broadcastToGame(gameId, 'PHASE_CHANGED', {
+          from: 'LOBBY',
+          to: response.currentPhase,
+          round: 0,
+        });
+      }
+
+      return response;
     } catch (error) {
       const replay = await this.commandRequests.recoverReplay(
         this.prisma,
@@ -860,7 +921,7 @@ export class RoomsService {
     room: { id: string; rulesetMode: RulesetMode },
     gameId: string,
     key: { userId: string; endpoint: string; clientRequestId: string },
-  ): Promise<GameStarted> {
+  ): Promise<WithEmit<GameStarted>> {
     return this.prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<{ id: string; status: string }[]>`
         SELECT id, status FROM games WHERE id = ${gameId}::uuid FOR UPDATE
@@ -873,7 +934,7 @@ export class RoomsService {
       const replay = await this.commandRequests.findExisting(tx, key);
 
       if (replay) {
-        return replay.body as unknown as GameStarted;
+        return { response: replay.body as unknown as GameStarted, isNewWrite: false };
       }
 
       if (locked[0].status !== 'LOBBY') {
@@ -983,7 +1044,7 @@ export class RoomsService {
         body: response as unknown as Prisma.InputJsonValue,
       });
 
-      return response;
+      return { response, isNewWrite: true };
     });
   }
 

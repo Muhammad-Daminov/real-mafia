@@ -191,6 +191,10 @@ model Game {
   players       GamePlayer[]  @relation("GamePlayers")
   phases        GamePhase[]
   roleAssignments GameRoleAssignment[]
+  actions       GameAction[]
+  abilityUsage  RoleAbilityUsage[]
+  votes         GameVote[]
+  result        GameResult?
 
   createdAt     DateTime      @default(now()) @map("created_at")
   startedAt     DateTime?     @map("started_at")
@@ -226,6 +230,12 @@ model GamePlayer {
 
   hostOf           Game?            @relation("GameHost")
   roleAssignment   GameRoleAssignment?
+  actionsAsActor   GameAction[]     @relation("GameActionActor")
+  actionsAsTarget  GameAction[]     @relation("GameActionTarget")
+  actionsAsTarget2 GameAction[]     @relation("GameActionTarget2")
+  abilityUsage     RoleAbilityUsage[]
+  votesCast        GameVote[]       @relation("GameVoteVoter")
+  votesReceived    GameVote[]       @relation("GameVoteTarget")
 
   @@unique([gameId, userId])
   @@index([gameId, lifeStatus])
@@ -275,6 +285,9 @@ model GamePhase {
   endsAt    DateTime?     @map("ends_at")
   /// Null while this is the game's active phase — see the partial unique index.
   endedAt   DateTime?     @map("ended_at")
+
+  actions   GameAction[]
+  votes     GameVote[]
 
   @@index([gameId, round])
   @@map("game_phases")
@@ -405,4 +418,159 @@ model ScheduledTask {
   @@index([status, runAt])
   @@index([status, leaseExpiresAt])
   @@map("scheduled_tasks")
+}
+
+/// §17.1's `action_type` enum, verbatim.
+enum ActionType {
+  KILL
+  INVESTIGATE
+  PROTECT
+  SHOOT
+  GUARD
+  INVESTIGATE_PAIR
+  CHECK
+}
+
+/// §17.1: extends v5.0's `game_actions` table. One row per (game, phase,
+/// actor, slot) — `actionSlot` disambiguates a role with two night abilities
+/// (only Don: KILL@0, CHECK@1); every other role uses slot 0. OD-028
+/// (default: allowed, update-in-place) means a resubmission during the same
+/// NIGHT phase updates this row rather than being rejected — see the unique
+/// constraint below and `NightActionService.submitAction`'s upsert.
+///
+/// `result` is this action's own private outcome (§17.5's PRIVATE_PLAYER
+/// events: SHERIFF_RESULT, DON_CHECK_RESULT, JOURNALIST_RESULT, and the
+/// Doctor's silent "applied" ack) — written at resolution, null until then.
+/// No REST/realtime read endpoint exposes it this slice (§20's delivery
+/// mechanism isn't built yet, same OD-041 precedent as role assignments);
+/// this column exists so the data is queryable once that slice lands.
+model GameAction {
+  id             String     @id @default(uuid(7)) @db.Uuid
+
+  gameId         String     @map("game_id") @db.Uuid
+  game           Game       @relation(fields: [gameId], references: [id])
+
+  phaseId        String     @map("phase_id") @db.Uuid
+  phase          GamePhase  @relation(fields: [phaseId], references: [id])
+
+  actorPlayerId  String     @map("actor_player_id") @db.Uuid
+  actor          GamePlayer @relation("GameActionActor", fields: [actorPlayerId], references: [id])
+
+  actionType     ActionType @map("action_type")
+  /// Server-derived from (role, actionType) at submission — never client-supplied.
+  actionSlot     Int        @map("action_slot")
+
+  targetPlayerId  String     @map("target_player_id") @db.Uuid
+  target          GamePlayer @relation("GameActionTarget", fields: [targetPlayerId], references: [id])
+
+  /// Journalist's INVESTIGATE_PAIR second target (§17.1). Null for every other action.
+  targetPlayerId2 String?    @map("target_player_id_2") @db.Uuid
+  target2         GamePlayer? @relation("GameActionTarget2", fields: [targetPlayerId2], references: [id])
+
+  /// Populated by NightResolutionService at NIGHT_RESOLUTION; null while pending.
+  result         Json?
+
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  @@unique([gameId, phaseId, actorPlayerId, actionSlot])
+  @@index([gameId, phaseId])
+  @@map("game_actions")
+}
+
+/// §17.2: "a fresh role_ability_usage(game_id, player_id, ability, used_count)
+/// counter, incremented transactionally at resolution (not at submission, so
+/// a submitted-but-invalidated action does not consume the limit)." Only the
+/// two once-per-game abilities need a counter (Sheriff SHOOT, Doctor
+/// self-PROTECT); Doctor's separate "no consecutive-night repeat" rule
+/// (OD-004) is checked directly against the previous night's GameAction row,
+/// not via this counter.
+enum AbilityUsageKind {
+  SHERIFF_SHOOT
+  DOCTOR_SELF_PROTECT
+}
+
+model RoleAbilityUsage {
+  id        String           @id @default(uuid(7)) @db.Uuid
+
+  gameId    String           @map("game_id") @db.Uuid
+  game      Game             @relation(fields: [gameId], references: [id])
+
+  playerId  String           @map("player_id") @db.Uuid
+  player    GamePlayer       @relation(fields: [playerId], references: [id])
+
+  ability   AbilityUsageKind
+  usedCount Int              @default(0) @map("used_count")
+
+  @@unique([gameId, playerId, ability])
+  @@map("role_ability_usage")
+}
+
+/// §16/OD-018/OD-020: day-vote casting. Carried forward from v5.0's
+/// `game_votes` (§33.1's "all v5.0 §34.1 tables carry forward" note) — this
+/// column shape is engineering judgment applied to a named mechanism, same
+/// precedent as `game_actions`'s shape last slice, not a literal
+/// transcription (v5.0's text isn't in this repo). One row per (game, phase,
+/// voter) — OD-020(b): changing a vote is an UPDATE of this row, not a new
+/// insert, so the unique constraint below is also `VoteService.castVote`'s
+/// upsert key. No `result`/outcome column: unlike `GameAction`, a vote has no
+/// private per-voter outcome — OD-020(a) makes the *tally itself* public in
+/// real time, and `VoteResolutionService` records the round's outcome only as
+/// the `game_players.life_status` write it triggers, not on this row.
+model GameVote {
+  id             String     @id @default(uuid(7)) @db.Uuid
+
+  gameId         String     @map("game_id") @db.Uuid
+  game           Game       @relation(fields: [gameId], references: [id])
+
+  phaseId        String     @map("phase_id") @db.Uuid
+  phase          GamePhase  @relation(fields: [phaseId], references: [id])
+
+  voterPlayerId  String     @map("voter_player_id") @db.Uuid
+  voter          GamePlayer @relation("GameVoteVoter", fields: [voterPlayerId], references: [id])
+
+  /// OD-045: self-voting is allowed, so this may equal `voterPlayerId`.
+  targetPlayerId String     @map("target_player_id") @db.Uuid
+  target         GamePlayer @relation("GameVoteTarget", fields: [targetPlayerId], references: [id])
+
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  @@unique([gameId, phaseId, voterPlayerId])
+  @@index([gameId, phaseId])
+  @@map("game_votes")
+}
+
+/// §16.3's literal domain: "game_results.winner_team ∈ {TOWN, MAFIA,
+/// NEUTRAL, DRAW}". OD-046(2): DRAW is a first-class enum member here, not a
+/// null winner_team plus a separate "summary flag" column — §16.1's prose
+/// ("winner_team = null, summary flag 'draw'") is superseded by this later,
+/// schema-specific statement in the same section.
+enum WinnerTeam {
+  TOWN
+  MAFIA
+  NEUTRAL
+  DRAW
+}
+
+/// §16.3/§10.3: carried forward from v5.0 (§33.1's "all v5.0 §34.1 tables
+/// carry forward" note, same precedent as `game_actions`/`game_votes` before
+/// it) — this column shape is engineering judgment, not a literal
+/// transcription. One row per finished game (`gameId` unique), written by
+/// `GameLifecycleService.transitionPhase` in the same transaction as the
+/// GAME_OVER write, since `game_results.winner_team` is itself named in
+/// §10.3's restricted-write list. No summary JSON / per-player role-reveal
+/// field here — out of this slice's scope (see the win-evaluator slice's
+/// non-goals); this table exists to hold exactly the one column §16.3 names.
+model GameResult {
+  id         String     @id @default(uuid(7)) @db.Uuid
+
+  gameId     String     @unique @map("game_id") @db.Uuid
+  game       Game       @relation(fields: [gameId], references: [id])
+
+  winnerTeam WinnerTeam @map("winner_team")
+
+  createdAt  DateTime   @default(now()) @map("created_at")
+
+  @@map("game_results")
 }
