@@ -5,7 +5,8 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   plugins: [react()],
   server: {
-    allowedHosts: ['devel-finest-overhead-gotten.trycloudflare.com'],
+    host: true,
+    allowedHosts: ['.trycloudflare.com'],
   },
   test: {
     environment: 'node',
