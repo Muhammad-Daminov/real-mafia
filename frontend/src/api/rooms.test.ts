@@ -229,3 +229,118 @@ describe('leaveRoom / setReady — room-id-keyed, share the same error-mapping p
     );
   });
 });
+
+describe('getRoomByCode', () => {
+  it('GETs /rooms/:code (no body) and returns the RoomSummary verbatim', async () => {
+    const { getRoomByCode } = await import('./rooms');
+    const body: import('./rooms').RoomSummary = {
+      roomId: 'room-1',
+      code: 'ABCDEF',
+      visibility: 'PRIVATE',
+      status: 'OPEN',
+      rulesetMode: 'NORMAL',
+      maxPlayers: 8,
+      gameId: 'game-1',
+      gameStatus: 'LOBBY',
+      playerCount: 2,
+    };
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(body), { status: 200 }));
+
+    const result = await getRoomByCode('ABCDEF');
+
+    expect(fetch).toHaveBeenCalledWith(`${API_URL}/rooms/ABCDEF`, expect.objectContaining({}));
+    const [, init] = vi.mocked(fetch).mock.calls[0]!;
+    expect(init?.method).toBeUndefined();
+    expect(result).toEqual(body);
+  });
+
+  it('URL-encodes the code', async () => {
+    const { getRoomByCode } = await import('./rooms');
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          roomId: 'r',
+          code: 'AB CD',
+          visibility: 'PRIVATE',
+          status: 'OPEN',
+          rulesetMode: 'NORMAL',
+          maxPlayers: 8,
+          gameId: 'g',
+          gameStatus: 'LOBBY',
+          playerCount: 1,
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await getRoomByCode('AB CD/EF');
+
+    const [url] = vi.mocked(fetch).mock.calls[0]!;
+    expect(url).toBe(`${API_URL}/rooms/${encodeURIComponent('AB CD/EF')}`);
+  });
+
+  it('throws ApiError with status + backend error code for a nonexistent room', async () => {
+    const { getRoomByCode } = await import('./rooms');
+    const { ApiError } = await import('./client');
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ code: 'ROOM_NOT_FOUND', message: 'Room not found' }), { status: 404 }),
+    );
+
+    await expect(getRoomByCode('NOPE99')).rejects.toMatchObject(
+      new ApiError('Room not found', 404, 'ROOM_NOT_FOUND'),
+    );
+  });
+});
+
+describe('startGame', () => {
+  it('POSTs /rooms/:id/start (room id) with a fresh clientRequestId', async () => {
+    const { startGame } = await import('./rooms');
+    const body: import('./rooms').GameStarted = {
+      roomId: 'room-1',
+      gameId: 'game-1',
+      status: 'RUNNING',
+      currentPhase: 'ROLE_REVEAL',
+      playerCount: 4,
+      rulesVersion: '6.0.0',
+      startedAt: '2026-01-01T00:00:00.000Z',
+    };
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(body), { status: 200 }));
+
+    const result = await startGame('room-1');
+
+    expect(fetch).toHaveBeenCalledWith(
+      `${API_URL}/rooms/room-1/start`,
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ clientRequestId: 'fixed-uuid-1' }) }),
+    );
+    expect(result).toEqual(body);
+  });
+
+  it('throws ApiError with status + backend error code on failure (e.g. NOT_ENOUGH_PLAYERS)', async () => {
+    const { startGame } = await import('./rooms');
+    const { ApiError } = await import('./client');
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({ code: 'NOT_ENOUGH_PLAYERS', message: 'O‘yinni boshlash uchun kamida 4 o‘yinchi kerak' }),
+        { status: 409 },
+      ),
+    );
+
+    await expect(startGame('room-1')).rejects.toMatchObject(
+      new ApiError('O‘yinni boshlash uchun kamida 4 o‘yinchi kerak', 409, 'NOT_ENOUGH_PLAYERS'),
+    );
+  });
+
+  it('throws ApiError NOT_HOST on failure for a non-host caller', async () => {
+    const { startGame } = await import('./rooms');
+    const { ApiError } = await import('./client');
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ code: 'NOT_HOST', message: 'Faqat xona egasi o‘yinni boshlay oladi' }), {
+        status: 403,
+      }),
+    );
+
+    await expect(startGame('room-1')).rejects.toMatchObject(
+      new ApiError('Faqat xona egasi o‘yinni boshlay oladi', 403, 'NOT_HOST'),
+    );
+  });
+});

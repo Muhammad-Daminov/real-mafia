@@ -102,3 +102,84 @@ export function setReady(roomId: string, isReady: boolean): Promise<ReadySet> {
     body: JSON.stringify({ clientRequestId: crypto.randomUUID(), isReady }),
   });
 }
+
+/**
+ * `POST /rooms/:id/host-transfer` (`TransferHostDto`/`RoomsService.transferHost`)
+ * — room-id-keyed. Not wired to any UI in F2 (no "transfer host" button in
+ * scope), added only so `HostTransferred`'s shape is available to type the
+ * `HOST_TRANSFERRED` realtime event payload (`lobbyStore.ts`).
+ */
+export interface HostTransferred {
+  roomId: string;
+  gameId: string;
+  previousHostPlayerId: string;
+  newHostPlayerId: string;
+}
+
+/**
+ * `GET /rooms/:code` (`RoomsController.getByCode`/`RoomsService.getRoomByCode`)
+ * — the only room/game snapshot endpoint that exists. Deliberately does
+ * **not** include a per-player roster (names, avatars, ready flags, or a
+ * `hostPlayerId`) — confirmed by reading `RoomsService.getRoomByCode`
+ * (../../../src/rooms/rooms.service.ts) line by line, not assumed. See
+ * `frontend/docs/OPEN_DECISIONS.md` OD-F2-001 for the consequence this has
+ * for the lobby's player list and the proposed (not implemented) backend
+ * addition.
+ */
+export type RoomStatus = 'OPEN' | 'IN_PROGRESS' | 'CLOSED';
+export type GameStatus = 'DRAFT' | 'LOBBY' | 'RUNNING' | 'PAUSED' | 'FINISHED' | 'CANCELLED';
+export type GamePhaseName =
+  | 'LOBBY'
+  | 'ROLE_REVEAL'
+  | 'NIGHT'
+  | 'NIGHT_RESOLUTION'
+  | 'MORNING'
+  | 'DISCUSSION'
+  | 'VOTING'
+  | 'VOTE_RESOLUTION'
+  | 'LAST_WORD'
+  | 'EXECUTION'
+  | 'WIN_CHECK'
+  | 'GAME_OVER';
+
+export interface RoomSummary {
+  roomId: string;
+  code: string;
+  visibility: RoomVisibility;
+  status: RoomStatus;
+  rulesetMode: RulesetMode;
+  maxPlayers: number;
+  gameId: string;
+  gameStatus: GameStatus;
+  playerCount: number;
+}
+
+export function getRoomByCode(code: string): Promise<RoomSummary> {
+  return apiFetch<RoomSummary>(`/rooms/${encodeURIComponent(code)}`);
+}
+
+/**
+ * `POST /rooms/:id/start` (`StartGameDto`/`RoomsService.startGame`) —
+ * room-id-keyed. Host-only (`NOT_HOST`), requires `Room` status `LOBBY`
+ * (`ROOM_NOT_IN_LOBBY`) and `playerCount >= 4` (`NOT_ENOUGH_PLAYERS`,
+ * `MIN_PLAYERS_TO_START` in `start-game.config.ts`). Per OD-014
+ * (../../../docs/decisions/OPEN_DECISIONS.md), `isReady` never gates start —
+ * confirmed by reading `startGameTransaction`: it checks host + player count
+ * only, never touches `isReady`.
+ */
+export interface GameStarted {
+  roomId: string;
+  gameId: string;
+  status: GameStatus;
+  currentPhase: GamePhaseName;
+  playerCount: number;
+  rulesVersion: string;
+  startedAt: string;
+}
+
+export function startGame(roomId: string): Promise<GameStarted> {
+  return apiFetch<GameStarted>(`/rooms/${encodeURIComponent(roomId)}/start`, {
+    method: 'POST',
+    body: JSON.stringify({ clientRequestId: crypto.randomUUID() }),
+  });
+}
