@@ -71,6 +71,11 @@ function App() {
             Not running inside Telegram — open this Mini App via the bot, not a plain browser tab.
           </p>
         )}
+        {authStatus === 'session_expired' && (
+          <p style={{ color: '#f87171' }}>
+            Session expired. Close the Mini App and reopen it from the bot menu.
+          </p>
+        )}
         {authStatus === 'error' && authError && <p style={{ color: '#f87171' }}>error: {authError}</p>}
         {authStatus === 'error' && (
           <button onClick={() => void authenticate()}>Retry auth</button>

@@ -1,10 +1,15 @@
 import { requireApiUrl } from '../config/env';
+import { readStoredToken, writeStoredToken } from '../auth/tokenStorage';
 import type { ApiErrorBody, LoginResponse } from './types';
 
 /**
- * In-memory only, per the task's explicit instruction — never written to
- * `localStorage`/`sessionStorage`. Lost on full page reload by design; a
- * reload re-runs the Telegram auth flow from a fresh `initData` instead.
+ * OD-F1-003: an in-memory variable is still the source of truth read on
+ * every request (`getToken`), but `setToken` also persists to
+ * `sessionStorage` (../auth/tokenStorage.ts) — see that OD for why this
+ * deviates from "memory only". `getStoredToken` is the app-start restore
+ * path's entry point; it does not itself populate `currentToken` — the
+ * caller (auth store) decides whether the stored token is still usable
+ * (not expired) before calling `setToken` with it.
  */
 let currentToken: string | null = null;
 
@@ -14,6 +19,11 @@ export function getToken(): string | null {
 
 export function setToken(token: string | null): void {
   currentToken = token;
+  writeStoredToken(token);
+}
+
+export function getStoredToken(): string | null {
+  return readStoredToken();
 }
 
 export class ApiError extends Error {
@@ -68,6 +78,14 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
 
   if (!response.ok) {
     const body: unknown = await response.json().catch(() => null);
+
+    // A 401 from any authenticated call means the current token is no
+    // longer usable server-side (expired, rejected, whatever the cause) —
+    // clear it (memory + sessionStorage) so nothing keeps retrying with it.
+    if (response.status === 401) {
+      setToken(null);
+    }
+
     throw new ApiError(messageFrom(body, response.statusText), response.status, codeFrom(body));
   }
 

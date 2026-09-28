@@ -8,6 +8,11 @@
  * here (`API->>MA: { accessToken, refreshToken, roomId? }`), but the current
  * implementation returns no such field — see docs/OPEN_DECISIONS.md (this
  * project) OD-F1-001.
+ *
+ * `updatedAt` is optional because `GET /users/me`
+ * (../../../src/users/users.service.ts `findById`'s explicit `select`)
+ * returns the same shape minus that one field — the two endpoints don't
+ * project identically, so the type has to cover both.
  */
 export interface TelegramUser {
   id: string;
@@ -17,7 +22,7 @@ export interface TelegramUser {
   lastName: string | null;
   avatar: string | null;
   createdAt: string;
-  updatedAt: string;
+  updatedAt?: string;
 }
 
 export interface LoginResponse {

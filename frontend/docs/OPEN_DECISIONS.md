@@ -74,6 +74,46 @@ later wants this narrowed (e.g. the gateway emitting a structured
 `{ code: 'TOKEN_EXPIRED' | 'NOT_A_PLAYER' | ... }` error), that's a backend
 change out of this slice's scope.
 
+## OD-F1-003 — JWT persisted to `sessionStorage`, not memory-only
+
+**Context.** The original F1 slice stored the JWT in memory only, by
+explicit instruction. In practice this collided head-on with OD-F1-001's
+finding: `initData` is single-use for its whole freshness window
+(`TelegramReplayGuardService`). A memory-only token means *any* full page
+reload — including Vite's own HMR full-reload fallback during dev, or the
+user simply refreshing — throws the token away and re-runs
+`POST /auth/telegram` with the *same* `initData` string (Telegram doesn't
+regenerate it mid-session), which the replay guard now correctly rejects.
+"Retry auth" cannot fix this because it re-sends the identical already-used
+payload. The Mini App became effectively single-use per Telegram launch
+under the memory-only rule.
+
+**Decision.** Deviate from "memory only": `api/client.ts`'s `setToken`
+also writes through to `sessionStorage` (`auth/tokenStorage.ts`). On app
+start, `authStore.authenticate()` reads the stored token, checks its `exp`
+claim locally (`auth/jwt.ts`, decode-only — no signature verification,
+purely a client-side "is this worth trying" heuristic; the backend's own
+`JwtStrategy` remains the actual authority), and if unexpired, skips
+`POST /auth/telegram` entirely and calls `GET /users/me` instead to
+populate the profile. `initData` is only spent when there is no usable
+stored token.
+
+**Why `sessionStorage` and not `localStorage`.** `sessionStorage` is
+cleared when the tab/WebView closes — a closed-then-reopened Mini App gets
+a fresh Telegram launch, a fresh `initData`, and (correctly) no leftover
+token from a previous session. `localStorage` would persist indefinitely
+across separate Mini App launches, which is a bigger persistence footprint
+than this problem calls for.
+
+**XSS tradeoff, stated plainly.** Anything in `sessionStorage` is
+readable by any script that can run in the page's origin (unlike an
+`httpOnly` cookie). This trades a real theoretical exposure for fixing an
+actual, currently-broken flow — accepted as a debug-slice tradeoff, not a
+final security posture. The token is still a 7-day-lived bearer JWT either
+way (`AuthModule`'s `expiresIn: '7d'`), so the exposure window this closes
+in one place (a variable in memory) was never the tight bound the "memory
+only" instruction implied.
+
 ## Known gap (not an open decision — verified, not ambiguous): backend CORS is not configured
 
 `src/main.ts` never calls `app.enableCors()`, and no `CorsModule`/manual
