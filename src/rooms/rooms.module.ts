@@ -9,5 +9,9 @@ import { RealtimeModule } from '../common/realtime/realtime.module';
   imports: [GameEngineModule, RealtimeModule],
   controllers: [RoomsController],
   providers: [RoomsService, CommandRequestService],
+  // B-D1: DevToolsModule injects RoomsService to join synthetic bot players
+  // through the real join/ready path (fill-bots), rather than writing to
+  // game_players directly.
+  exports: [RoomsService],
 })
 export class RoomsModule {}

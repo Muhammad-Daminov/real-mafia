@@ -29,6 +29,14 @@ model User {
   lastName   String?
   avatar     String?
 
+  /// B-R1... B-D1: dev-only synthetic ("bot") users created by
+  /// POST /dev/rooms/:code/fill-bots to fill a lobby for solo testing.
+  /// `telegramId` for these rows is also always outside the real Telegram
+  /// id space (a negative number, DevToolsService) — this column is the
+  /// authoritative, non-parsing-based signal every "never contact a bot"
+  /// check (outbox enqueue, any future Telegram sender) filters on.
+  isBot      Boolean  @default(false) @map("is_bot")
+
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 

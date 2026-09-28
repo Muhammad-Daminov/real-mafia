@@ -1056,6 +1056,48 @@ the restriction instead of the whole endpoint).
 This is an addition to §8 (rooms) and should be folded into the Master TZ at
 the next revision, same as OD-035–054.
 
+### OD-056 — Dev-Only Bot Players: Identity Marker and Module Gating · RESOLVED
+Context: B-D1 needed a way to fill a LOBBY room with synthetic players for
+solo testing (`POST /dev/rooms/:code/fill-bots`, `src/dev-tools/`), and two
+things the task's own wording left as "if the schema allows a non-breaking
+way, otherwise rely on the reserved range and log an OD":
+
+1. **How a bot is marked, for "skip bots" checks (e.g. the outbox).**
+   Decision: added `User.isBot Boolean @default(false)` — a plain additive
+   column (migration `20260928125437_add_user_is_bot`), non-breaking (every
+   existing row defaults to `false`, no existing query's shape changes).
+   This is the *authoritative* signal `GameLifecycleService
+   .enqueueGameFinishedNotifications` filters on (`user: { isBot: false }`)
+   — not string-parsing a `telegramId`. The reserved negative-number
+   `telegramId` range (`-${Date.now()}${randomInt(1000,9999)}`,
+   `DevToolsService.generateBotTelegramId`) is kept as a *second*,
+   belt-and-suspenders guarantee — outside Telegram's real (always
+   positive) id space, so a bot can never collide with a real account
+   even if some future code path forgot to check `isBot` — not the sole
+   signal, since the task allowed for a schema marker and one was
+   possible here without breaking anything.
+2. **How the module disappears entirely outside dev.** `DevToolsModule` is
+   only ever added to `AppModule`'s `imports` via
+   `resolveDevToolsImports()` (`src/dev-tools/dev-tools.config.ts`),
+   evaluated once at `@Module()` decoration time (same timing
+   `common/config/cors.ts`'s `resolveCorsOrigins()` already established as
+   safe — env vars are set before Nest's module graph is built). Gated on
+   `DEV_TOOLS_ENABLED === 'true' && NODE_ENV !== 'production'`; if
+   `NODE_ENV=production` and `DEV_TOOLS_ENABLED` is set **at all** (any
+   value, to also catch a stray/typo'd truthy-looking value, not just a
+   literal `'true'`), the process throws synchronously before
+   `main.ts`'s `app.listen()` is ever reached.
+
+**Membership check reuses OD-055, not a bespoke one.** Fill-bots requires
+the caller be an active member of the room ("host or not", per this task's
+own wording) — rather than writing a second membership check,
+`DevToolsService.fillBots` calls the same `RoomsService.getRoomByCode(code,
+requesterUserId)` OD-055 already gates on `players` presence, and throws
+`ForbiddenException` (403) when it comes back absent. One membership rule,
+one place it's enforced.
+
+This is a dev-tooling addition, not a Master TZ gameplay behavior — no §
+section to fold it into.
 
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 

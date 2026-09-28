@@ -164,7 +164,11 @@ describe('GameLifecycleService (integration)', () => {
   });
 
   describe('GAME_FINISHED outbox notifications (§19/§25, OD-051)', () => {
-    const seedFinishableGame = async (dealtInCount: number, leftInLobbyCount: number) => {
+    const seedFinishableGame = async (
+      dealtInCount: number,
+      leftInLobbyCount: number,
+      botDealtInCount = 0,
+    ) => {
       const host = await makeUser();
       const room = await prisma.room.create({
         data: { code: randomUUID().slice(0, 6).toUpperCase(), maxPlayers: 8, creatorUserId: host.id },
@@ -202,6 +206,21 @@ describe('GameLifecycleService (integration)', () => {
         });
       }
 
+      // B-D1: a dealt-in *bot* player — must never receive a GAME_FINISHED
+      // notification either, same as a real player who left before start.
+      for (let i = 0; i < botDealtInCount; i++) {
+        const user = await prisma.user.create({
+          data: { telegramId: `-${Date.now()}${i}bot`, firstName: `Bot ${i}`, isBot: true },
+        });
+        createdUserIds.push(user.id);
+        const gp = await prisma.gamePlayer.create({
+          data: { gameId: game.id, userId: user.id, lifeStatus: 'ALIVE' },
+        });
+        await prisma.gameRoleAssignment.create({
+          data: { gameId: game.id, playerId: gp.id, roleCode: 'CIVILIAN' },
+        });
+      }
+
       return { game, activePhase, dealtInPlayers };
     };
 
@@ -233,6 +252,32 @@ describe('GameLifecycleService (integration)', () => {
         expect(payload.winnerTeam).toBe('TOWN');
         expect(task.status).toBe('PENDING');
       }
+    });
+
+    it('B-D1: enqueues no TELEGRAM_MESSAGE task for a dealt-in bot player, even though it was dealt a role', async () => {
+      const { game, activePhase, dealtInPlayers } = await seedFinishableGame(2, 0, 3);
+
+      await prisma.$transaction((tx) =>
+        service.transitionPhase(tx, {
+          gameId: game.id,
+          closePhaseId: activePhase.id,
+          toPhase: GamePhaseName.GAME_OVER,
+          round: 1,
+          endsAt: null,
+          gameOver: true,
+          winnerTeam: 'TOWN',
+        }),
+      );
+
+      const tasks = await prisma.scheduledTask.findMany({
+        where: { kind: TELEGRAM_MESSAGE_TASK_KIND, payload: { path: ['gameId'], equals: game.id } },
+      });
+
+      // 2 real dealt-in players, never the 3 bots also dealt in above.
+      expect(tasks).toHaveLength(2);
+      const telegramIds = tasks.map((t) => (t.payload as unknown as TelegramMessageTaskPayload).telegramId).sort();
+      expect(telegramIds).toEqual(dealtInPlayers.map((p) => p.user.telegramId).sort());
+      expect(telegramIds.some((id) => id.startsWith('-'))).toBe(false);
     });
 
     it('a rollback after the GameResult write already ran enqueues no TELEGRAM_MESSAGE task', async () => {

@@ -254,7 +254,10 @@ export class GameLifecycleService {
     winnerTeam: WinnerTeam,
   ): Promise<void> {
     const players = await tx.gamePlayer.findMany({
-      where: { gameId, roleAssignment: { isNot: null } },
+      // B-D1: bots (`User.isBot`) never receive Telegram messages — they
+      // have no real chat to deliver to (their `telegramId` is a reserved,
+      // never-real value, DevToolsService).
+      where: { gameId, roleAssignment: { isNot: null }, user: { isBot: false } },
       select: { user: { select: { telegramId: true } } },
     });
 
