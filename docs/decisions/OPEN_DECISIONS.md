@@ -956,6 +956,51 @@ Decision:
 This is an addition to §21 and should be folded into the Master TZ at the
 next revision, same as OD-035–051.
 
+### OD-053 — Outbox Delivery Error Classification: Permanent vs. Rate-Limited · RESOLVED
+Context: OD-052 point 2 accepted "burn up to 10 attempts against an
+unrecoverable target" as the cost of not building a second retry mechanism.
+Follow-up instruction: refine specifically the two Telegram error shapes
+where that cost is avoidable without inventing a parallel retry system —
+400/403 (permanent: bot blocked, chat not found, user never started the bot)
+and 429 (transient but self-describing: the response names its own
+`retry_after`).
+
+Decision:
+1. **No second retry mechanism was built.** Both new error paths still
+   terminate in `SchedulerService`'s existing two outcomes
+   (`fail()`/`FAILED`) — nothing outside `scheduler.service.ts` decides
+   retry timing or terminal status.
+2. **Minimal generic hook added to `SchedulerService`** (not
+   Telegram-specific, so any future `scheduled_tasks` consumer can use it):
+   two typed errors, `PermanentTaskError` (optional `statusCode`) and
+   `RetryAfterError` (`retryAfterMs`). `pollOnce`'s catch block checks
+   `instanceof` before falling through to the existing generic-`Error`
+   path, so every consumer that doesn't throw these (today:
+   `PHASE_ADVANCE_CHECK`) is unaffected.
+3. **`PermanentTaskError` → `failPermanently()`**, a new `SchedulerService`
+   method: sets `FAILED` immediately, bypassing the `attemptCount <
+   maxAttempts` check `fail()` normally applies — so a 400/403 ends the task
+   after exactly one attempt instead of OD-043d's 10. `pollOnce` logs a warn
+   with `taskId` + `statusCode` only, not the thrown message — the response
+   body (which Telegram embeds error text in) can carry the recipient's
+   `chat_id`/description and is stored in `lastError` for later inspection,
+   not put in the application log stream.
+4. **`RetryAfterError` → `fail()` gains an optional `minRunAt` parameter.**
+   `fail()`'s own OD-043c backoff computation still runs unconditionally;
+   `minRunAt` (derived from Telegram's `retry_after` seconds) is only a
+   floor — `runAt = max(backoffRunAt, minRunAt)`. If Telegram's 429 body
+   doesn't parse or carries no `parameters.retry_after`, `deliver` falls
+   through to a plain `Error`, i.e. the normal backoff path, per the
+   instruction's explicit fallback.
+5. **5xx and network failures are unchanged** — plain `Error`, full
+   OD-043c/d backoff-then-`FAILED` lifecycle, per OD-052 point 2's original
+   reasoning (unclassified failures still cost at most 10 attempts, which
+   remains acceptable since neither is knowably permanent nor
+   self-describing about retry timing the way 429 is).
+
+This is an addition to §19 (scheduled-task consumer contract) and should be
+folded into the Master TZ at the next revision, same as OD-035–052.
+
 
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
@@ -985,6 +1030,6 @@ None. Every previously blocking decision is resolved (see the addendum above).
   2026-09-25 addendum resolved them.)
 - OD-031–OD-034 are new in v6.0 (MASTER_TZ.md §42.2/§42.1) and non-blocking, each with a
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
-- Total: 42 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
-  OD-037 through OD-052 recorded 2026-09-26/27), 0 open+blocking,
-  10 open+non-blocking (52 IDs, OD-001 through OD-052).
+- Total: 43 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
+  OD-037 through OD-053 recorded 2026-09-26/27/28), 0 open+blocking,
+  10 open+non-blocking (53 IDs, OD-001 through OD-053).

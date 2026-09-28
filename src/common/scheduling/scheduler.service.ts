@@ -41,6 +41,42 @@ export interface EnqueueInput {
 
 export type TaskHandler = (payload: Prisma.JsonValue) => Promise<void>;
 
+/**
+ * OD-053: the minimal hook a consumer can throw to mark its own task
+ * permanently non-retryable (e.g. Telegram 400/403 — bot blocked, chat not
+ * found) without inventing a second retry mechanism alongside `fail()`'s
+ * existing backoff/`maxAttempts` machinery. `pollOnce` recognizes this type
+ * and routes to `failPermanently` instead of `fail` — every other consumer
+ * (today: `PHASE_ADVANCE_CHECK`) is entirely unaffected since they never
+ * throw it.
+ */
+export class PermanentTaskError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode?: number,
+  ) {
+    super(message);
+    this.name = 'PermanentTaskError';
+  }
+}
+
+/**
+ * OD-053: the minimal hook a consumer can throw to supply a lower bound for
+ * the next retry's `runAt` (e.g. Telegram 429's `retry_after`), without
+ * replacing `fail()`'s own backoff calculation — `fail` still runs its usual
+ * exponential-backoff-with-jitter computation and simply takes the later of
+ * the two.
+ */
+export class RetryAfterError extends Error {
+  constructor(
+    message: string,
+    public readonly retryAfterMs: number,
+  ) {
+    super(message);
+    this.name = 'RetryAfterError';
+  }
+}
+
 const POLL_INTERVAL_MS = 1_000; // OD-043a
 const LEASE_DURATION_MS = 30_000; // OD-043b
 const BACKOFF_BASE_MS = 5_000; // OD-043c
@@ -220,8 +256,13 @@ export class SchedulerService implements OnApplicationBootstrap, OnModuleDestroy
     });
   }
 
-  /** OD-043c/d: retries with backoff until `maxAttempts`, then moves to the terminal FAILED status. */
-  async fail(taskId: string, errorMessage: string): Promise<void> {
+  /**
+   * OD-043c/d: retries with backoff until `maxAttempts`, then moves to the
+   * terminal FAILED status. `minRunAt` (OD-053) is an optional lower bound on
+   * the next attempt — e.g. Telegram 429's `retry_after` — applied on top of
+   * (never instead of) the usual backoff computation.
+   */
+  async fail(taskId: string, errorMessage: string, minRunAt?: Date): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
       const task = await tx.scheduledTask.findUniqueOrThrow({ where: { id: taskId } });
 
@@ -238,16 +279,32 @@ export class SchedulerService implements OnApplicationBootstrap, OnModuleDestroy
         return;
       }
 
+      const backoffRunAt = new Date(Date.now() + backoffDelayMs(task.attemptCount));
+      const runAt = minRunAt && minRunAt.getTime() > backoffRunAt.getTime() ? minRunAt : backoffRunAt;
+
       await tx.scheduledTask.update({
         where: { id: taskId },
         data: {
           status: ScheduledTaskStatus.PENDING,
-          runAt: new Date(Date.now() + backoffDelayMs(task.attemptCount)),
+          runAt,
           leaseOwner: null,
           leaseExpiresAt: null,
           lastError: errorMessage,
         },
       });
+    });
+  }
+
+  /** OD-053: terminal FAILED immediately, bypassing `maxAttempts` — for errors a consumer knows will never succeed on retry. */
+  async failPermanently(taskId: string, errorMessage: string): Promise<void> {
+    await this.prisma.scheduledTask.update({
+      where: { id: taskId },
+      data: {
+        status: ScheduledTaskStatus.FAILED,
+        lastError: errorMessage,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+      },
     });
   }
 
@@ -273,6 +330,23 @@ export class SchedulerService implements OnApplicationBootstrap, OnModuleDestroy
           await this.complete(task.id);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
+
+          if (error instanceof PermanentTaskError) {
+            this.logger.warn(
+              `Task ${task.id} (${task.kind}) failed permanently (status ${error.statusCode ?? 'n/a'})`,
+            );
+            await this.failPermanently(task.id, message);
+            continue;
+          }
+
+          if (error instanceof RetryAfterError) {
+            this.logger.warn(
+              `Task ${task.id} (${task.kind}) failed, retrying after ${error.retryAfterMs}ms`,
+            );
+            await this.fail(task.id, message, new Date(Date.now() + error.retryAfterMs));
+            continue;
+          }
+
           this.logger.warn(`Task ${task.id} (${task.kind}) failed: ${message}`);
           await this.fail(task.id, message);
         }

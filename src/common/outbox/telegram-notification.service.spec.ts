@@ -106,11 +106,32 @@ describe('TelegramNotificationService (integration)', () => {
     expect(task.status).toBe('DONE');
   });
 
-  it('a non-2xx Telegram response feeds the existing fail()/backoff machinery, not a new retry mechanism', async () => {
+  it('OD-053: a 403 response (bot blocked) ends the task terminal FAILED after exactly one attempt, not the normal backoff retry', async () => {
     fetchSpy.mockResolvedValue({
       ok: false,
-      status: 400,
+      status: 403,
       text: async () => '{"description":"Forbidden: bot was blocked by the user"}',
+    } as Response);
+
+    const scheduler = new SchedulerService(prisma);
+    const service = new TelegramNotificationService(scheduler);
+    service.onModuleInit();
+
+    const taskId = track(await enqueue(scheduler));
+
+    await pollUntilProcessed(scheduler, taskId);
+
+    const task = await prisma.scheduledTask.findUniqueOrThrow({ where: { id: taskId } });
+    expect(task.status).toBe('FAILED');
+    expect(task.attemptCount).toBe(1);
+    expect(task.lastError).toMatch(/Telegram sendMessage failed with status 403/);
+  });
+
+  it('a 500 Telegram response still feeds the existing fail()/backoff machinery, not a new retry mechanism', async () => {
+    fetchSpy.mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => '{"description":"Internal Server Error"}',
     } as Response);
 
     const scheduler = new SchedulerService(prisma);
@@ -124,11 +145,35 @@ describe('TelegramNotificationService (integration)', () => {
     const task = await prisma.scheduledTask.findUniqueOrThrow({ where: { id: taskId } });
     // OD-043c/d's exact retry shape (same as any other scheduled_tasks
     // consumer): requeued PENDING with a future run_at, under max_attempts —
-    // no bespoke "permanent failure" short-circuit was introduced.
+    // 5xx is not classified as permanent, per OD-052/OD-053.
     expect(task.status).toBe('PENDING');
     expect(task.attemptCount).toBe(1);
     expect(task.runAt.getTime()).toBeGreaterThan(Date.now());
-    expect(task.lastError).toMatch(/Telegram sendMessage failed with status 400/);
+    expect(task.lastError).toMatch(/Telegram sendMessage failed with status 500/);
+  });
+
+  it('OD-053: a 429 response with retry_after floors the next attempt at that delay, then still retries normally', async () => {
+    fetchSpy.mockResolvedValue({
+      ok: false,
+      status: 429,
+      text: async () => '{"description":"Too Many Requests","parameters":{"retry_after":37}}',
+    } as Response);
+
+    const scheduler = new SchedulerService(prisma);
+    const service = new TelegramNotificationService(scheduler);
+    service.onModuleInit();
+
+    const beforePoll = Date.now();
+    const taskId = track(await enqueue(scheduler));
+
+    await pollUntilProcessed(scheduler, taskId);
+
+    const task = await prisma.scheduledTask.findUniqueOrThrow({ where: { id: taskId } });
+    expect(task.status).toBe('PENDING'); // retried, not terminal
+    expect(task.attemptCount).toBe(1);
+    // 37s floor comfortably exceeds OD-043c's base 5s backoff for attempt 1.
+    expect(task.runAt.getTime()).toBeGreaterThanOrEqual(beforePoll + 37_000);
+    expect(task.lastError).toMatch(/Telegram sendMessage failed with status 429/);
   });
 
   it('a rejected fetch call (network failure) also feeds fail(), not an unhandled rejection', async () => {

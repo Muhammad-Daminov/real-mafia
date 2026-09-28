@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { SchedulerService } from '../scheduling/scheduler.service';
+import { PermanentTaskError, RetryAfterError, SchedulerService } from '../scheduling/scheduler.service';
 import { TELEGRAM_MESSAGE_TASK_KIND, TelegramMessageTaskPayload } from './outbox-task-kinds';
 
 /**
@@ -11,14 +11,21 @@ import { TELEGRAM_MESSAGE_TASK_KIND, TelegramMessageTaskPayload } from './outbox
  * policy for "the outbox dispatcher later" — no separate `outbox_events`
  * table, see OD-051).
  *
- * Any error thrown by `deliver` (network failure, non-2xx Telegram response)
- * propagates unchanged to `SchedulerService.pollOnce`'s existing catch block,
- * which calls `fail()` — the same bounded-exponential-backoff/max-attempts
- * machinery every other `scheduled_tasks` consumer already gets. No
- * retryable-vs-permanent error classification is introduced here — a 4xx
- * (e.g. user blocked the bot) simply retries until `maxAttempts` and lands in
- * the terminal `FAILED` status like any other exhausted task, per this
- * slice's explicit instruction not to build a second retry mechanism.
+ * Errors thrown by `deliver` propagate to `SchedulerService.pollOnce`'s
+ * existing catch block, which still owns every retry decision (OD-053):
+ *  - 400/403 (bot blocked, chat not found, user never started the bot) are
+ *    genuinely permanent — retrying burns all `maxAttempts` for an outcome
+ *    that can never change, so these throw `PermanentTaskError` and the task
+ *    is marked terminal `FAILED` after exactly one attempt.
+ *  - 429 (rate limited) is transient but Telegram tells us how long to wait
+ *    (`parameters.retry_after`) — thrown as `RetryAfterError` so `fail()`'s
+ *    own backoff computation is floored at that value instead of guessing.
+ *  - 5xx and network failures are unchanged: a plain `Error`, retried under
+ *    `fail()`'s normal exponential-backoff/max-attempts machinery.
+ * No second retry mechanism is introduced — both typed errors are consumed
+ * by `SchedulerService` itself (`PermanentTaskError`/`RetryAfterError`), and
+ * both still terminate in `fail()`/`failPermanently()`, the same two outcomes
+ * every other `scheduled_tasks` consumer already has available.
  */
 @Injectable()
 export class TelegramNotificationService implements OnModuleInit {
@@ -44,10 +51,44 @@ export class TelegramNotificationService implements OnModuleInit {
       body: JSON.stringify({ chat_id: payload.telegramId, text: renderText(payload) }),
     });
 
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      throw new Error(`Telegram sendMessage failed with status ${response.status}: ${body}`);
+    if (response.ok) {
+      return;
     }
+
+    const status = response.status;
+    const body = await response.text().catch(() => '');
+    const message = `Telegram sendMessage failed with status ${status}: ${body}`;
+
+    if (status === 400 || status === 403) {
+      // The taskId + status warn (no message text — the body may carry the
+      // recipient's chat_id/description) is logged by SchedulerService's
+      // pollOnce, which knows the taskId this deliver() call doesn't.
+      throw new PermanentTaskError(message, status);
+    }
+
+    if (status === 429) {
+      const retryAfterSec = parseRetryAfterSeconds(body);
+      if (retryAfterSec !== null) {
+        throw new RetryAfterError(message, retryAfterSec * 1000);
+      }
+    }
+
+    throw new Error(message);
+  }
+}
+
+/**
+ * Telegram's 429 body shape: `{"ok":false,"error_code":429,"description":"...",
+ * "parameters":{"retry_after":<seconds>}}`. Returns null (falling through to
+ * the normal backoff path) if the body doesn't parse or carries no usable value.
+ */
+function parseRetryAfterSeconds(body: string): number | null {
+  try {
+    const parsed = JSON.parse(body) as { parameters?: { retry_after?: number } };
+    const retryAfter = parsed.parameters?.retry_after;
+    return typeof retryAfter === 'number' ? retryAfter : null;
+  } catch {
+    return null;
   }
 }
 
