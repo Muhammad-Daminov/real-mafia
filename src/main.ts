@@ -2,9 +2,15 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
+import { httpCorsOptions } from './common/config/cors';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // Mini App frontend origin allow-list (common/config/cors.ts) — the same
+  // list the /game Socket.IO gateway's own `cors` option reads, so HTTP and
+  // websocket origins can't drift apart.
+  app.enableCors(httpCorsOptions());
 
   // Per-IP rate limiting (§6.3) reads the client IP, but behind the load
   // balancer of §6.1 every request otherwise appears to come from the LB.

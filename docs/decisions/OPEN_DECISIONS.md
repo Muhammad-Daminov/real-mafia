@@ -1001,6 +1001,31 @@ Decision:
 This is an addition to §19 (scheduled-task consumer contract) and should be
 folded into the Master TZ at the next revision, same as OD-035–052.
 
+### OD-054 — CORS Origin Allow-List: Wildcard Handling and Unset Default · RESOLVED
+Context: enabling CORS for the Mini App frontend (`src/common/config/cors.ts`,
+`src/main.ts`, `src/common/realtime/realtime.gateway.ts`) needed two defaults
+the task's own instructions didn't fully pin down: what happens if an
+operator sets `CORS_ORIGINS=*` despite being told not to, and what the
+allow-list should be when `CORS_ORIGINS` is unset at all (dev/test).
+
+Decision:
+1. **A literal `*` in `CORS_ORIGINS` is stripped, not honored.** "No
+   wildcard in production" reads as an absolute invariant, not merely this
+   module's own default — so `resolveCorsOrigins()` filters `*` out of
+   the parsed list unconditionally (whether it's the whole value or one
+   entry in a comma-separated list) rather than passing it through to the
+   `cors` package's origin array. A misconfigured env var fails closed
+   (falls back to the dev-only default below) instead of silently opening
+   CORS to every origin.
+2. **Unset default is `http://localhost:5173` only** — the Vite dev
+   server's own default port (`frontend/vite.config.ts`), not an empty
+   array (which would reject every browser request including local dev)
+   and not a broader guess at a production frontend origin (none is named
+   anywhere in this repo).
+
+This is an addition to §6 (transport/CORS) and should be folded into the
+Master TZ at the next revision, same as OD-035–053.
+
 
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
@@ -1030,6 +1055,6 @@ None. Every previously blocking decision is resolved (see the addendum above).
   2026-09-25 addendum resolved them.)
 - OD-031–OD-034 are new in v6.0 (MASTER_TZ.md §42.2/§42.1) and non-blocking, each with a
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
-- Total: 43 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
-  OD-037 through OD-053 recorded 2026-09-26/27/28), 0 open+blocking,
-  10 open+non-blocking (53 IDs, OD-001 through OD-053).
+- Total: 44 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
+  OD-037 through OD-054 recorded 2026-09-26/27/28), 0 open+blocking,
+  10 open+non-blocking (54 IDs, OD-001 through OD-054).

@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { OnGatewayInit, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../../prisma/prisma.service';
+import { resolveCorsOrigins } from '../config/cors';
 
 interface JwtPayload {
   sub: string;
@@ -40,7 +41,11 @@ interface JwtPayload {
  * OPEN_DECISIONS.md OD-047), but the join happens now so a later slice's
  * `sendToPlayer` calls need no gateway change.
  */
-@WebSocketGateway({ namespace: '/game', cors: { origin: '*' } })
+// `origin` reuses the same CORS_ORIGINS allow-list as the HTTP API's
+// `app.enableCors` (common/config/cors.ts) — evaluated once at decoration
+// time (module load), which is fine here since env vars are already set by
+// the process manager before Nest ever imports this file.
+@WebSocketGateway({ namespace: '/game', cors: { origin: resolveCorsOrigins() } })
 export class RealtimeGateway implements OnGatewayInit {
   private readonly logger = new Logger(RealtimeGateway.name);
 
