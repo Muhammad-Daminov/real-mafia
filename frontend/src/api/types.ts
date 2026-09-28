@@ -30,9 +30,17 @@ export interface LoginResponse {
  * Nest's default `HttpExceptionFilter` shape for a thrown `HttpException`
  * (e.g. `BadRequestException` from `AuthService`) — `message` may be a
  * string or a string array (class-validator's shape for DTO failures).
+ *
+ * `code` is a second, distinct shape: `RoomException`
+ * (../../../src/rooms/rooms.errors.ts) responds with `{ code, message }`
+ * only — no `statusCode`/`error` fields — for every room command error
+ * (`GAME_FULL`, `NOT_HOST`, `CONFIG_INVALID`, etc., §32's error table).
+ * Both shapes are read from the same body here since a caller can't know in
+ * advance which endpoint it's talking to.
  */
 export interface ApiErrorBody {
-  statusCode: number;
+  statusCode?: number;
   message: string | string[];
   error?: string;
+  code?: string;
 }

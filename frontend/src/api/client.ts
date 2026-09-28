@@ -18,11 +18,18 @@ export function setToken(token: string | null): void {
 
 export class ApiError extends Error {
   readonly status: number;
+  /**
+   * Set only for `RoomException`-shaped bodies (`{ code, message }`,
+   * ../../../src/rooms/rooms.errors.ts) — undefined for the generic Nest
+   * `{ statusCode, message, error }` shape, which has no such field.
+   */
+  readonly code: string | undefined;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -37,6 +44,11 @@ function messageFrom(body: unknown, fallback: string): string {
     return message.join(', ');
   }
   return fallback;
+}
+
+function codeFrom(body: unknown): string | undefined {
+  const candidate = body as Partial<ApiErrorBody> | null;
+  return typeof candidate?.code === 'string' ? candidate.code : undefined;
 }
 
 /**
@@ -56,7 +68,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
 
   if (!response.ok) {
     const body: unknown = await response.json().catch(() => null);
-    throw new ApiError(messageFrom(body, response.statusText), response.status);
+    throw new ApiError(messageFrom(body, response.statusText), response.status, codeFrom(body));
   }
 
   return response.json() as Promise<T>;
