@@ -3,6 +3,8 @@ import { requireApiUrl } from '../config/env';
 import { getToken } from '../api/client';
 import { useAuthStore } from '../store/authStore';
 import { useSocketStore } from '../store/socketStore';
+import { useLobbyStore } from '../store/lobbyStore';
+import type { GamePhaseName, HostTransferred, JoinedRoom, LeftRoom, ReadySet } from '../api/rooms';
 
 /**
  * Cap on socket.io-client's built-in reconnection attempts (default:
@@ -44,6 +46,16 @@ export function connectSocket(gameId: string): void {
   instance.on('connect', () => {
     reAuthAttempted = false;
     useSocketStore.getState().setStatus('connected');
+
+    // Slice F2: there's no event-replay/sequence on the backend (§20), so
+    // any (re)connect — including automatic reconnects after a drop — may
+    // have missed events. If a lobby is active, refetch its REST snapshot
+    // to resync playerCount/status; own host/ready state can't be
+    // refreshed this way (the snapshot has no per-player fields — see
+    // lobbyStore.ts / OD-F2-001), a known limitation, not silently ignored.
+    if (useLobbyStore.getState().code) {
+      void useLobbyStore.getState().refetchSnapshot();
+    }
   });
 
   instance.on('connect_error', (error: Error) => {
@@ -60,6 +72,7 @@ export function connectSocket(gameId: string): void {
 
   instance.onAny((eventName: string, payload: unknown) => {
     useSocketStore.getState().pushEvent(eventName, payload);
+    applyLobbyEvent(eventName, payload);
   });
 
   socket = instance;
@@ -92,6 +105,35 @@ function handleConnectError(error: Error): void {
   // token is retried once more, `connect_error` fires again, and
   // `reAuthAttempted` is already `true` so this branch does not loop.
   void useAuthStore.getState().authenticate();
+}
+
+/**
+ * `ROOM_CREATED` is deliberately not applied here — the creator already has
+ * everything it carries from `POST /rooms`'s own response, and OD-049 notes
+ * no other socket can be connected to `game:{gameId}` yet at creation time.
+ */
+function applyLobbyEvent(eventName: string, payload: unknown): void {
+  const lobby = useLobbyStore.getState();
+
+  switch (eventName) {
+    case 'PLAYER_JOINED':
+      lobby.applyPlayerJoined(payload as JoinedRoom);
+      break;
+    case 'PLAYER_LEFT':
+      lobby.applyPlayerLeft(payload as LeftRoom);
+      break;
+    case 'PLAYER_READY_CHANGED':
+      lobby.applyReadySet(payload as ReadySet);
+      break;
+    case 'HOST_TRANSFERRED':
+      lobby.applyHostTransferred(payload as HostTransferred);
+      break;
+    case 'PHASE_CHANGED':
+      lobby.applyPhaseChanged(payload as { from: GamePhaseName; to: GamePhaseName; round: number });
+      break;
+    default:
+      break;
+  }
 }
 
 export function disconnectSocket(): void {

@@ -32,17 +32,23 @@ function createFakeSocket() {
 
 const ioMock = vi.fn();
 const authenticateMock = vi.fn();
+const getRoomByCodeMock = vi.fn();
 
 vi.mock('socket.io-client', () => ({ io: (...args: unknown[]) => ioMock(...args) }));
 vi.mock('../store/authStore', () => ({
   useAuthStore: { getState: () => ({ authenticate: authenticateMock }) },
 }));
+vi.mock('../api/rooms', async () => {
+  const actual = await vi.importActual<typeof import('../api/rooms')>('../api/rooms');
+  return { ...actual, getRoomByCode: (...args: unknown[]) => getRoomByCodeMock(...args) };
+});
 
 beforeEach(() => {
   vi.stubEnv('VITE_API_URL', 'http://localhost:3000');
   ioMock.mockReset();
   authenticateMock.mockReset();
   authenticateMock.mockResolvedValue('fresh-token');
+  getRoomByCodeMock.mockReset();
 });
 
 afterEach(() => {
@@ -133,6 +139,114 @@ describe('connectSocket / socket status transitions', () => {
 
     expect(useSocketStore.getState().status).toBe('disconnected');
     expect(useSocketStore.getState().lastError).toBe('transport close');
+  });
+});
+
+describe('lobbyStore wiring (F2)', () => {
+  it('applies PLAYER_JOINED / PLAYER_LEFT / PLAYER_READY_CHANGED / HOST_TRANSFERRED / PHASE_CHANGED to lobbyStore', async () => {
+    const fake = createFakeSocket();
+    ioMock.mockReturnValue(fake);
+
+    const { connectSocket } = await import('./socketClient');
+    const { useLobbyStore } = await import('../store/lobbyStore');
+
+    useLobbyStore.getState().enterFromJoin('ABCDEF', {
+      roomId: 'room-1',
+      gameId: 'game-abc',
+      playerId: 'player-2',
+      playerCount: 2,
+      maxPlayers: 8,
+    });
+
+    connectSocket('game-abc');
+    fake.__trigger('connect');
+    getRoomByCodeMock.mockClear(); // clear the reconnect-triggered refetch call below asserts separately
+
+    fake.__trigger('PLAYER_JOINED', {
+      roomId: 'room-1',
+      gameId: 'game-abc',
+      playerId: 'player-3',
+      playerCount: 3,
+      maxPlayers: 8,
+    });
+    expect(useLobbyStore.getState().playerCount).toBe(3);
+
+    fake.__trigger('PLAYER_READY_CHANGED', {
+      roomId: 'room-1',
+      gameId: 'game-abc',
+      playerId: 'player-2',
+      isReady: true,
+    });
+    expect(useLobbyStore.getState().myIsReady).toBe(true);
+
+    fake.__trigger('HOST_TRANSFERRED', {
+      roomId: 'room-1',
+      gameId: 'game-abc',
+      previousHostPlayerId: 'player-1',
+      newHostPlayerId: 'player-2',
+    });
+    expect(useLobbyStore.getState().myIsHost).toBe(true);
+
+    fake.__trigger('PHASE_CHANGED', { from: 'LOBBY', to: 'ROLE_REVEAL', round: 0 });
+    expect(useLobbyStore.getState().currentPhase).toBe('ROLE_REVEAL');
+
+    fake.__trigger('PLAYER_LEFT', {
+      roomId: 'room-1',
+      gameId: 'game-abc',
+      playerId: 'player-3',
+      playerCount: 2,
+      newHostPlayerId: null,
+      roomClosed: false,
+    });
+    expect(useLobbyStore.getState().playerCount).toBe(2);
+  });
+
+  it('refetches the lobby snapshot on every (re)connect when a lobby is active', async () => {
+    const fake = createFakeSocket();
+    ioMock.mockReturnValue(fake);
+    getRoomByCodeMock.mockResolvedValue({
+      roomId: 'room-1',
+      code: 'ABCDEF',
+      visibility: 'PRIVATE',
+      status: 'OPEN',
+      rulesetMode: 'NORMAL',
+      maxPlayers: 8,
+      gameId: 'game-abc',
+      gameStatus: 'LOBBY',
+      playerCount: 5,
+    });
+
+    const { connectSocket } = await import('./socketClient');
+    const { useLobbyStore } = await import('../store/lobbyStore');
+
+    useLobbyStore.getState().enterFromJoin('ABCDEF', {
+      roomId: 'room-1',
+      gameId: 'game-abc',
+      playerId: 'player-2',
+      playerCount: 2,
+      maxPlayers: 8,
+    });
+
+    connectSocket('game-abc');
+    fake.__trigger('connect');
+    expect(getRoomByCodeMock).toHaveBeenCalledTimes(1);
+
+    // Reconnect after a drop: refetch fires again.
+    fake.__trigger('disconnect', 'transport close');
+    fake.__trigger('connect');
+    expect(getRoomByCodeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not refetch on connect when no lobby is active (e.g. the debug screen)', async () => {
+    const fake = createFakeSocket();
+    ioMock.mockReturnValue(fake);
+
+    const { connectSocket } = await import('./socketClient');
+
+    connectSocket('game-abc');
+    fake.__trigger('connect');
+
+    expect(getRoomByCodeMock).not.toHaveBeenCalled();
   });
 });
 
