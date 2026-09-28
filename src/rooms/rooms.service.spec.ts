@@ -343,6 +343,105 @@ describe('RoomsService (integration)', () => {
         code: RoomErrorCode.ROOM_NOT_FOUND,
       });
     });
+
+    describe('players roster (B-R1)', () => {
+      it('omits `players` entirely (not an empty array) when no requesterUserId is given', async () => {
+        const host = await makeUser();
+        const room = await createValidRoom(host.id);
+
+        const summary = await service.getRoomByCode(room.code);
+
+        expect(summary.players).toBeUndefined();
+      });
+
+      it('omits `players` for an authenticated non-member (OD-055)', async () => {
+        const host = await makeUser();
+        const outsider = await makeUser();
+        const room = await createValidRoom(host.id);
+
+        const summary = await service.getRoomByCode(room.code, outsider.id);
+
+        expect(summary.players).toBeUndefined();
+        expect(summary.playerCount).toBe(1);
+      });
+
+      it('returns the roster to a member, reflecting join/ready/host-transfer, ordered by joinedAt, LEFT players excluded', async () => {
+        const host = await makeUser();
+        await prisma.user.update({
+          where: { id: host.id },
+          data: { firstName: 'Host', lastName: 'Person', avatar: 'https://t.me/i/host.jpg' },
+        });
+        const room = await createValidRoom(host.id, { maxPlayers: 4 });
+
+        const second = await makeUser();
+        await prisma.user.update({ where: { id: second.id }, data: { firstName: 'Second' } });
+        const joined = await service.joinRoom({
+          userId: second.id,
+          code: room.code,
+          clientRequestId: randomUUID(),
+        });
+
+        const third = await makeUser();
+        await service.joinRoom({
+          userId: third.id,
+          code: room.code,
+          clientRequestId: randomUUID(),
+        });
+
+        await service.setReady({
+          userId: second.id,
+          roomId: room.roomId,
+          clientRequestId: randomUUID(),
+          isReady: true,
+        });
+
+        await service.transferHost({
+          userId: host.id,
+          roomId: room.roomId,
+          clientRequestId: randomUUID(),
+          targetPlayerId: joined.playerId,
+        });
+
+        await service.leaveRoom({
+          userId: third.id,
+          roomId: room.roomId,
+          clientRequestId: randomUUID(),
+        });
+
+        const summary = await service.getRoomByCode(room.code, host.id);
+
+        expect(summary.players).toBeDefined();
+        expect(summary.players).toHaveLength(2);
+        expect(summary.players!.map((p) => p.playerId)).toEqual([
+          expect.any(String),
+          joined.playerId,
+        ]);
+
+        const [hostEntry, secondEntry] = summary.players!;
+        expect(hostEntry.displayName).toBe('Host Person');
+        expect(hostEntry.avatarUrl).toBe('https://t.me/i/host.jpg');
+        expect(hostEntry.isHost).toBe(false);
+        expect(hostEntry.isReady).toBe(false);
+
+        expect(secondEntry.displayName).toBe('Second');
+        expect(secondEntry.avatarUrl).toBeNull();
+        expect(secondEntry.isHost).toBe(true);
+        expect(secondEntry.isReady).toBe(true);
+        expect(new Date(secondEntry.joinedAt).getTime()).toBeGreaterThan(
+          new Date(hostEntry.joinedAt).getTime(),
+        );
+      });
+
+      it('never exposes telegramId anywhere in the response', async () => {
+        const host = await makeUser();
+        const room = await createValidRoom(host.id);
+
+        const summary = await service.getRoomByCode(room.code, host.id);
+
+        expect(JSON.stringify(summary)).not.toContain(host.telegramId);
+        expect(JSON.stringify(summary)).not.toContain('telegramId');
+      });
+    });
   });
 
   describe('joinRoom', () => {

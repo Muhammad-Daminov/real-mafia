@@ -48,8 +48,8 @@ export class RoomsController {
   }
 
   @Get(':code')
-  getByCode(@Param('code') code: string) {
-    return this.roomsService.getRoomByCode(code);
+  getByCode(@Req() req: RequestWithUser, @Param('code') code: string) {
+    return this.roomsService.getRoomByCode(code, req.user.userId);
   }
 
   @Post(':code/join')

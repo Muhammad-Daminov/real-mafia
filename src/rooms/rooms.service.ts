@@ -69,6 +69,26 @@ export interface CreatedRoom {
   visibility: RoomVisibility;
 }
 
+/**
+ * B-R1: never carries `telegramId`, roles, or any other internal field —
+ * only what a fellow lobby member needs to render a roster. `displayName`
+ * is derived from `User.firstName`/`lastName` (no separate stored display
+ * name exists); `avatarUrl` is `User.avatar` verbatim (nullable — we only
+ * store what Telegram's `photo_url` gave us at login, never fetch/generate
+ * one). `joinedAt` is an ISO string, matching the `GameStarted.startedAt`
+ * convention for the same reason (a `Date` would silently become a string
+ * on the CommandRequest replay path but not on the first call — moot here
+ * since this is a read, not a replay-recorded write, but kept consistent).
+ */
+export interface RoomPlayerSummary {
+  playerId: string;
+  displayName: string;
+  avatarUrl: string | null;
+  isReady: boolean;
+  isHost: boolean;
+  joinedAt: string;
+}
+
 export interface RoomSummary {
   roomId: string;
   code: string;
@@ -79,6 +99,12 @@ export interface RoomSummary {
   gameId: string;
   gameStatus: string;
   playerCount: number;
+  /**
+   * OD-055: present only when the caller is an active (non-LEFT) member of
+   * this room's game — omitted (not an empty array) for a non-member, to
+   * keep "no roster data" visibly distinct from "empty roster".
+   */
+  players?: RoomPlayerSummary[];
 }
 
 export interface JoinRoomInput {
@@ -300,17 +326,38 @@ export class RoomsService {
    * on `rooms.code` (`WHERE status != 'CLOSED'`), and correct once the
    * janitor that releases codes after 24h (§8.5) exists, without needing to
    * special-case it here.
+   *
+   * B-R1/OD-055: `requesterUserId` gates the new `players` roster only —
+   * the aggregate fields stay visible to any authenticated caller, matching
+   * this endpoint's existing (unchanged) access rule. Optional so every
+   * existing caller/test keeps working unchanged and simply gets no
+   * roster, same as a genuine non-member would.
    */
-  async getRoomByCode(code: string): Promise<RoomSummary> {
+  async getRoomByCode(
+    code: string,
+    requesterUserId?: string,
+  ): Promise<RoomSummary> {
     const room = await this.resolveOpenRoomByCode(this.prisma, code);
 
     const game = await this.prisma.game.findUniqueOrThrow({
       where: { id: room.activeGameId! },
     });
 
-    const playerCount = await this.prisma.gamePlayer.count({
+    const activePlayers = await this.prisma.gamePlayer.findMany({
       where: { gameId: room.activeGameId!, lifeStatus: ACTIVE_PLAYER_FILTER },
+      orderBy: { joinedAt: 'asc' },
+      select: {
+        id: true,
+        userId: true,
+        isReady: true,
+        joinedAt: true,
+        user: { select: { firstName: true, lastName: true, avatar: true } },
+      },
     });
+
+    const isMember =
+      requesterUserId !== undefined &&
+      activePlayers.some((p) => p.userId === requesterUserId);
 
     return {
       roomId: room.id,
@@ -321,7 +368,21 @@ export class RoomsService {
       maxPlayers: room.maxPlayers,
       gameId: game.id,
       gameStatus: game.status,
-      playerCount,
+      playerCount: activePlayers.length,
+      ...(isMember
+        ? {
+            players: activePlayers.map((p) => ({
+              playerId: p.id,
+              displayName: p.user.lastName
+                ? `${p.user.firstName} ${p.user.lastName}`
+                : p.user.firstName,
+              avatarUrl: p.user.avatar,
+              isReady: p.isReady,
+              isHost: p.id === game.hostPlayerId,
+              joinedAt: p.joinedAt.toISOString(),
+            })),
+          }
+        : {}),
     };
   }
 

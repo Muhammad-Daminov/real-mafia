@@ -1026,6 +1026,36 @@ Decision:
 This is an addition to §6 (transport/CORS) and should be folded into the
 Master TZ at the next revision, same as OD-035–053.
 
+### OD-055 — `GET /rooms/:code` Player Roster: Membership Gate · RESOLVED
+Context: B-R1 added a `players` roster to `RoomSummary`
+(`RoomsService.getRoomByCode`) — display name, avatar, ready, host, joinedAt
+per active player — for the frontend lobby (`frontend/docs/OPEN_DECISIONS.md`
+OD-F2-001). Before adding it, checked who can actually call this endpoint:
+`RoomsController` is `@UseGuards(JwtGuard)` at the class level (any
+authenticated user), and `getRoomByCode` itself performs **no membership
+check at all** — any authenticated user who knows/guesses a room code can
+already fetch the aggregate `RoomSummary` (`playerCount`, `status`, etc.).
+That access rule predates this slice and is unchanged here — "do not modify
+the backend" boundaries elsewhere in this project's history apply to scope,
+not to leaving a pre-existing gap unaddressed when it's directly relevant to
+what's being built.
+
+Decision: a roster is meaningfully more sensitive than an aggregate count
+(it names people, even if only by their Telegram first/last name + avatar),
+so **the new `players` field is gated to active members only** —
+`getRoomByCode(code, requesterUserId?)` returns `players` only when
+`requesterUserId` is an active (non-LEFT) `GamePlayer` of the room's game;
+otherwise the field is omitted entirely (not `[]`, so "no data returned" is
+distinguishable from "empty room"). The endpoint's own access rule (any
+authenticated caller can still fetch the aggregate shape) is **not**
+changed — narrowing that further was judged out of this slice's stated
+scope ("Scope is ONLY this... if [already restricted to members], change
+nothing about access"; it is not already restricted, so the new field gets
+the restriction instead of the whole endpoint).
+
+This is an addition to §8 (rooms) and should be folded into the Master TZ at
+the next revision, same as OD-035–054.
+
 
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
