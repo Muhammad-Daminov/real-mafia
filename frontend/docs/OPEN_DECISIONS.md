@@ -114,14 +114,21 @@ way (`AuthModule`'s `expiresIn: '7d'`), so the exposure window this closes
 in one place (a variable in memory) was never the tight bound the "memory
 only" instruction implied.
 
-## Known gap (not an open decision — verified, not ambiguous): backend CORS is not configured
+## Resolved gap (was open, fixed on the backend side): CORS
 
-`src/main.ts` never calls `app.enableCors()`, and no `CorsModule`/manual
-header middleware exists anywhere in `src/`. A browser-based frontend
-calling `POST /auth/telegram` from a different origin (any real dev setup —
-Vite on `:5173`/a tunnel origin, backend on `:3000`/its own origin) will be
-blocked by the browser's CORS check; only same-origin requests (e.g.
-reverse-proxying both behind one host) work today. This is not something
-this slice can fix without editing the backend, which is out of scope
-("do NOT modify it"). Flagging so it isn't mistaken for a frontend bug when
-`fetch` fails with a CORS error during manual testing.
+**Originally flagged here:** `src/main.ts` never called `app.enableCors()`,
+so a browser-based frontend calling the backend from a different origin
+would be blocked by the browser's own CORS check.
+
+**Status: fixed**, backend commit `61f67e3` (`fix(main): CORS allow-list
+for the Mini App frontend`, backend OD-054,
+`../../docs/decisions/OPEN_DECISIONS.md`). `main.ts` now calls
+`app.enableCors(httpCorsOptions())`
+(`src/common/config/cors.ts`), reading an allow-list from the `CORS_ORIGINS`
+env var (comma-separated exact origins; a literal `*` is stripped, never
+honored; unset defaults to `http://localhost:5173` only). The `/game`
+Socket.IO gateway's own `cors` option reads the same allow-list, so HTTP
+and websocket origins can't drift apart. This frontend's own
+`VITE_API_URL`/tunnel origin needs to be present in the backend's
+`CORS_ORIGINS` for requests to succeed — a deployment/env-config step, not
+a code gap on either side anymore.
