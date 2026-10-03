@@ -4,7 +4,91 @@ import { useSocketStore } from '../store/socketStore';
 import { canStartGame, useLobbyStore } from '../store/lobbyStore';
 import { disconnectSocket } from '../socket/socketClient';
 import { leaveRoom, setReady, startGame, type RoomPlayerSummary } from '../api/rooms';
+import { fillBots } from '../api/devTools';
+import { ApiError } from '../api/client';
 import { describeRoomError } from '../errors/roomErrorMessages';
+
+/**
+ * F2.2: mirrors `App.tsx`'s own inline `?debug=1` check (the same gate that
+ * keeps `DebugScreen` reachable) — exported as a pure function so the
+ * dev-only bots panel's visibility is unit-testable without rendering the
+ * whole screen. Deliberately not shared with `App.tsx` (no new shared
+ * module for a one-line check used in two places).
+ */
+export function isDebugMode(search: string): boolean {
+  return new URLSearchParams(search).get('debug') === '1';
+}
+
+interface DevBotsPanelProps {
+  code: string;
+}
+
+/**
+ * Dev-only (`?debug=1`) control for `POST /dev/rooms/:code/fill-bots`
+ * (../../../src/dev-tools/dev-tools.controller.ts, B-D1, backend commit
+ * f7d95e2). Deliberately plain English, no `uz` strings — this panel never
+ * appears for a real user. After a successful call this does nothing else:
+ * the bots join through `RoomsService.joinRoom`/`setReady` for real, which
+ * broadcasts the same `PLAYER_JOINED`/`PLAYER_READY_CHANGED` events any
+ * other join does — `socketClient.ts`'s existing handler already schedules
+ * the debounced roster refetch for those, so a second manual refetch here
+ * would just be a redundant duplicate request.
+ */
+function DevBotsPanel({ code }: DevBotsPanelProps) {
+  const [count, setCount] = useState(3);
+  const [ready, setReadyChecked] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleFill = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fillBots(code, count, ready);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.status === 404) {
+          setError('Dev tools are disabled on the backend (DEV_TOOLS_ENABLED)');
+        } else if (err.status === 403) {
+          setError(err.message || 'You are not a member of this room.');
+        } else {
+          setError(`${err.status}${err.code ? ` ${err.code}` : ''}: ${err.message}`);
+        }
+      } else {
+        setError('Network error.');
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mafia-card" style={{ border: '1px dashed orange' }}>
+      <strong>DEV</strong>
+      <div className="mafia-row">
+        <input
+          type="number"
+          min={1}
+          value={count}
+          onChange={(e) => setCount(Math.max(1, Number(e.target.value) || 1))}
+          style={{ width: 60 }}
+          aria-label="Bot count"
+        />
+        <label>
+          <input type="checkbox" checked={ready} onChange={(e) => setReadyChecked(e.target.checked)} /> Ready
+        </label>
+        <button
+          className="mafia-button mafia-button--secondary"
+          onClick={() => void handleFill()}
+          disabled={busy}
+        >
+          {busy ? '…' : 'Fill with bots'}
+        </button>
+      </div>
+      {error && <p className="mafia-banner mafia-banner--error">{error}</p>}
+    </div>
+  );
+}
 
 const START_REASON_TEXT: Record<NonNullable<ReturnType<typeof canStartGame>['reasonKey']>, (state: {
   playerCount: number;
@@ -195,6 +279,8 @@ function LobbyScreen() {
       )}
 
       {actionError && <p className="mafia-banner mafia-banner--error">{actionError}</p>}
+
+      {isDebugMode(window.location.search) && lobby.code && <DevBotsPanel code={lobby.code} />}
     </div>
   );
 }
