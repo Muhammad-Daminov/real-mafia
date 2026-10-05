@@ -1290,20 +1290,48 @@ player's role to one caller, the opposite of what "private" means here.
 Idempotent replay (`isNewWrite: false`) emits nothing, same discipline
 `PHASE_CHANGED` already follows for this exact call site.
 
-**What this does not do.** No chat channel, no REST "get my role" endpoint,
-no frontend screen, no reconnect/resync delivery (a player who reconnects
-*after* missing this one-time event still has no way to re-fetch their role
-— the same "no `game_events` replay store" gap OD-047 already logged,
-unresolved here too). No new event for `MULTIPLE_DEATHS`'s public role
-reveal-on-death (OD-024, separately resolved, unaffected). No change to
-`RoleAssignmentService`'s write path, `dealRoles`' Fisher-Yates algorithm,
-or any authorization/lock discipline — `emitRoleReveal` only reads data
-`startGameTransaction` already produced inside its own transaction and
-fires after that transaction has committed, identical in spirit to every
-other `sendToPlayer`/`broadcastToGame` call site's "post-commit only" rule.
+**What this does not do.** No chat channel, no frontend screen. No new event
+for `MULTIPLE_DEATHS`'s public role reveal-on-death (OD-024, separately
+resolved, unaffected). No change to `RoleAssignmentService`'s write path,
+`dealRoles`' Fisher-Yates algorithm, or any authorization/lock discipline —
+`emitRoleReveal` only reads data `startGameTransaction` already produced
+inside its own transaction and fires after that transaction has committed,
+identical in spirit to every other `sendToPlayer`/`broadcastToGame` call
+site's "post-commit only" rule.
 
-This is an addition to §12.1/§20/OD-041 and should be folded into the Master
-TZ at the next revision, same as OD-035–058.
+**Addendum (B-R2, same day): the reconnect/resync gap above is now closed.**
+The paragraph above, as first drafted, said a reconnected player "still has
+no way to re-fetch their role" and left that unresolved. That gap is real
+and immediately follow-on work needed closing it — §21 ("Reconnect and
+Recovery") names the exact mechanism: "Unchanged algorithm from v5.0 §27
+(snapshot → WS connect...)", and §31 names the exact endpoint this
+mechanism uses: `GET /games/:gameId/state` (v5.0 §27.2, extended). v5.0's
+own source text for that endpoint's baseline shape is not reproduced in this
+repository (same carry-forward-gap class as OD-041/047/049/051's precedent)
+— §31 only lists what v6 *adds* to it (wallet balance, ability-usage
+counters, chat `lastChatSequence`), not the v5.0 baseline those are additions
+*to*. Decision: ship the minimal baseline slice actually needed today —
+`GamesController`/`GamesService` (`src/games/`), `GET /games/:gameId/state`,
+`bearer`-authenticated, returning `{gameId, status, currentPhase, round,
+phaseEndsAt, myPlayerId, myLifeStatus, myRoleCode, myTeam, teammates}` for
+the caller's own `GamePlayer` row only. `myRoleCode`/`myTeam` are `null`
+before `ROLE_REVEAL` (no `GameRoleAssignment` row exists yet in `LOBBY`);
+`teammates` mirrors `ROLE_REVEALED`'s own rule (OD-025) — non-empty only for
+a MAFIA-team caller, so a mafia player who reloads doesn't lose teammate
+visibility the socket event already gave them. A non-member (or a
+nonexistent `gameId` — indistinguishable, same collapsing
+`NightActionService.getMyActions`/`VoteService` already use for their own
+`PLAYER_NOT_IN_GAME`) gets 404, never a leaked peek at whether the game
+exists. **Not** built: wallet balance, cosmetics, ability-usage counters,
+`lastChatSequence` — those are §31's v6 *additions*, owned by the
+economy/chat slices that will eventually build them against this same
+endpoint; inventing them now, with no economy/chat module behind them,
+would be speculative. This endpoint and `ROLE_REVEALED` now share one
+source of truth for "what is my role" (both read the same
+`GameRoleAssignment`/`teamForRole` data) — no second role-computation path.
+
+This is an addition to §12.1/§20/§21/§31/OD-041 and should be folded into
+the Master TZ at the next revision, same as OD-035–058.
 
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 

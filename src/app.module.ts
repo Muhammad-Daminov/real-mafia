@@ -4,6 +4,7 @@ import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
 import { RoomsModule } from './rooms/rooms.module';
 import { GameEngineModule } from './game-engine/game-engine.module';
+import { GamesModule } from './games/games.module';
 import { OutboxModule } from './common/outbox/outbox.module';
 import { resolveDevToolsImports } from './dev-tools/dev-tools.config';
 
@@ -20,6 +21,7 @@ import { resolveDevToolsImports } from './dev-tools/dev-tools.config';
     AuthModule,
     RoomsModule,
     GameEngineModule,
+    GamesModule,
     OutboxModule,
     ...resolveDevToolsImports(),
   ],
