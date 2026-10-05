@@ -96,6 +96,7 @@ describe('SchedulerService (integration)', () => {
 
   it('claim only returns due PENDING tasks, marks them LEASED, and increments attempt_count', async () => {
     const scheduler = new SchedulerService(prisma);
+    scheduler.registerHandler(TEST_KIND, async () => {}); // OD-057: claim() is now scoped to registered kinds
 
     const dueId = await prisma.$transaction((tx) =>
       scheduler.enqueue(tx, { kind: TEST_KIND, payload: {}, runAt: new Date(Date.now() - 1_000) }),
@@ -122,6 +123,8 @@ describe('SchedulerService (integration)', () => {
   it('under two SchedulerService instances (simulated separate workers) polling the same due task, exactly one claims it — SKIP LOCKED proven, not assumed', async () => {
     const workerA = new SchedulerService(prisma);
     const workerB = new SchedulerService(prisma);
+    workerA.registerHandler(TEST_KIND, async () => {}); // OD-057: claim() is now scoped to registered kinds
+    workerB.registerHandler(TEST_KIND, async () => {});
 
     const taskId = await prisma.$transaction((tx) =>
       workerA.enqueue(tx, { kind: TEST_KIND, payload: {}, runAt: new Date(Date.now() - 1_000) }),
@@ -143,6 +146,7 @@ describe('SchedulerService (integration)', () => {
 
   it('a crashed worker (claims but never completes/fails) leaves the task reclaimable once its lease expires', async () => {
     const scheduler = new SchedulerService(prisma);
+    scheduler.registerHandler(TEST_KIND, async () => {}); // OD-057: claim() is now scoped to registered kinds
 
     const taskId = await prisma.$transaction((tx) =>
       scheduler.enqueue(tx, { kind: TEST_KIND, payload: {}, runAt: new Date(Date.now() - 1_000) }),
@@ -174,6 +178,7 @@ describe('SchedulerService (integration)', () => {
 
   it('complete marks the task DONE and clears the lease', async () => {
     const scheduler = new SchedulerService(prisma);
+    scheduler.registerHandler(TEST_KIND, async () => {}); // OD-057: claim() is now scoped to registered kinds
 
     const taskId = await prisma.$transaction((tx) =>
       scheduler.enqueue(tx, { kind: TEST_KIND, payload: {}, runAt: new Date(Date.now() - 1_000) }),
@@ -191,6 +196,7 @@ describe('SchedulerService (integration)', () => {
 
   it('fail re-queues as PENDING with a future run_at when under max_attempts (OD-043c backoff)', async () => {
     const scheduler = new SchedulerService(prisma);
+    scheduler.registerHandler(TEST_KIND, async () => {}); // OD-057: claim() is now scoped to registered kinds
 
     const taskId = await prisma.$transaction((tx) =>
       scheduler.enqueue(tx, { kind: TEST_KIND, payload: {}, runAt: new Date(Date.now() - 1_000) }),
@@ -211,6 +217,7 @@ describe('SchedulerService (integration)', () => {
 
   it('fail moves the task to FAILED (terminal) once attempt_count reaches max_attempts (OD-043d)', async () => {
     const scheduler = new SchedulerService(prisma);
+    scheduler.registerHandler(TEST_KIND, async () => {}); // OD-057: claim() is now scoped to registered kinds
 
     const taskId = await prisma.$transaction((tx) =>
       scheduler.enqueue(tx, {
@@ -262,9 +269,13 @@ describe('SchedulerService (integration)', () => {
     expect(task.status).toBe('DONE');
   });
 
-  it('pollOnce fails a task with no registered handler instead of dropping it silently', async () => {
+  it('OD-057: pollOnce leaves a due task of an unregistered kind untouched — claim() excludes it entirely, so it is never wastefully claimed-and-failed', async () => {
     const scheduler = new SchedulerService(prisma);
-
+    // No registerHandler call for this kind at all — simulates a task
+    // enqueued for a kind this worker doesn't (yet) know how to handle
+    // (e.g. a rolling deploy, or — before this fix — any other suite's
+    // concurrently-running SchedulerService instance claiming a row it
+    // can't process and corrupting it with a bogus "no handler" failure).
     const taskId = await prisma.$transaction((tx) =>
       scheduler.enqueue(tx, {
         kind: `NO_HANDLER_${randomUUID()}`,
@@ -277,8 +288,55 @@ describe('SchedulerService (integration)', () => {
     await scheduler.pollOnce();
 
     const task = await prisma.scheduledTask.findUniqueOrThrow({ where: { id: taskId } });
-    expect(task.status).toBe('PENDING'); // requeued via fail(), under max_attempts
-    expect(task.lastError).toMatch(/No handler registered/);
+    expect(task.status).toBe('PENDING'); // never claimed
+    expect(task.attemptCount).toBe(0);
+    expect(task.lastError).toBeNull();
+    expect(task.leaseOwner).toBeNull();
+  });
+
+  describe('OD-058: complete/fail/failPermanently tolerate a task row that no longer exists', () => {
+    // Reproduces the cross-suite flake this fixes: another suite's own,
+    // correctly kind+payload-scoped cleanup can delete a row this
+    // (different) SchedulerService instance already claimed and is
+    // mid-flight finalizing — same shared real Postgres table, two
+    // independent worker processes, no coordination between them beyond
+    // `claim()`'s row lock, which has already been released by the time the
+    // delete runs. Before OD-058, `fail` crashed the whole `pollOnce` loop
+    // uncaught (`findUniqueOrThrow` -> P2025); `complete`/`failPermanently`
+    // had the same latent exposure via plain `update`, just not yet
+    // observed in a real flake.
+    it('complete on an already-deleted task id is a no-op, not a throw', async () => {
+      const scheduler = new SchedulerService(prisma);
+      await expect(scheduler.complete(randomUUID())).resolves.toBeUndefined();
+    });
+
+    it('fail on an already-deleted task id is a no-op, not a throw', async () => {
+      const scheduler = new SchedulerService(prisma);
+      await expect(scheduler.fail(randomUUID(), 'irrelevant')).resolves.toBeUndefined();
+    });
+
+    it('failPermanently on an already-deleted task id is a no-op, not a throw', async () => {
+      const scheduler = new SchedulerService(prisma);
+      await expect(scheduler.failPermanently(randomUUID(), 'irrelevant')).resolves.toBeUndefined();
+    });
+
+    it('fail still applies its normal backoff/attempt-count update when the task does exist', async () => {
+      const scheduler = new SchedulerService(prisma);
+      scheduler.registerHandler(TEST_KIND, async () => {});
+      const taskId = track(
+        await prisma.$transaction((tx) =>
+          scheduler.enqueue(tx, { kind: TEST_KIND, payload: {}, runAt: new Date(Date.now() - 1_000) }),
+        ),
+      );
+
+      await scheduler.claim(); // lease it, attempt_count -> 1, same as pollOnce's own flow
+      await scheduler.fail(taskId, 'boom');
+
+      const task = await prisma.scheduledTask.findUniqueOrThrow({ where: { id: taskId } });
+      expect(task.status).toBe('PENDING');
+      expect(task.lastError).toBe('boom');
+      expect(task.leaseOwner).toBeNull();
+    });
   });
 
   describe('backoffDelayMs (OD-043c)', () => {

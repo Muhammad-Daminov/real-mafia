@@ -214,15 +214,31 @@ export class SchedulerService implements OnApplicationBootstrap, OnModuleDestroy
    * leased to `this.workerId`. Two workers polling concurrently never claim
    * the same row — `SKIP LOCKED` makes the second worker's scan skip past
    * whatever the first is already holding, rather than blocking on it.
+   *
+   * OD-057: scoped to `kind IN (registered handler kinds)`. A worker that
+   * claims a task it has no handler for can only waste an attempt (or, once
+   * OD-012's `PROCESS_ROLE` split is actually built, systematically starve a
+   * kind it was never meant to own) — claiming is the one place that
+   * ownership can and should be enforced, rather than discovering the
+   * mismatch after the fact in `pollOnce`. An instance with no registered
+   * handlers at all (e.g. a test exercising `claim`/`fail`/`complete` in
+   * isolation) claims nothing, by the same rule — it must register a handler
+   * for whatever `kind` it wants to claim, same as any real consumer.
    */
   async claim(batchSize: number = DEFAULT_BATCH_SIZE): Promise<ScheduledTask[]> {
+    const registeredKinds = [...this.handlers.keys()];
+    if (registeredKinds.length === 0) {
+      return [];
+    }
+
     return this.prisma.$transaction(async (tx) => {
       const now = new Date();
 
       const due = await tx.$queryRaw<{ id: string }[]>`
         SELECT id FROM scheduled_tasks
-        WHERE (status = 'PENDING' AND run_at <= ${now})
-           OR (status = 'LEASED' AND lease_expires_at <= ${now})
+        WHERE kind IN (${Prisma.join(registeredKinds)})
+          AND ((status = 'PENDING' AND run_at <= ${now})
+           OR (status = 'LEASED' AND lease_expires_at <= ${now}))
         ORDER BY run_at ASC
         LIMIT ${batchSize}
         FOR UPDATE SKIP LOCKED
@@ -249,11 +265,28 @@ export class SchedulerService implements OnApplicationBootstrap, OnModuleDestroy
     });
   }
 
+  /**
+   * OD-058: `updateMany` + an affected-row check, not `update` — tolerates
+   * `taskId` no longer existing (0 rows affected) instead of throwing
+   * Prisma's `P2025`. A row this worker holds a (still-valid, SKIP
+   * LOCKED-protected) claim on cannot be mutated by another *correctly
+   * functioning* worker — `claim()`'s row lock already rules that out — but
+   * it can still disappear out from under an in-flight `complete`/`fail`
+   * call if something else deletes it outright (this table has no
+   * production deleter today, but test cleanup scoped to a `kind`+payload
+   * match, racing a different suite's registered-for-that-kind consumer
+   * draining the same shared table, is exactly this scenario — see OD-058).
+   * Logging + returning beats letting that crash the whole `pollOnce` loop
+   * uncaught.
+   */
   async complete(taskId: string): Promise<void> {
-    await this.prisma.scheduledTask.update({
+    const { count } = await this.prisma.scheduledTask.updateMany({
       where: { id: taskId },
       data: { status: ScheduledTaskStatus.DONE, leaseOwner: null, leaseExpiresAt: null },
     });
+    if (count === 0) {
+      this.logger.warn(`complete: task ${taskId} no longer exists — skipping (OD-058)`);
+    }
   }
 
   /**
@@ -264,7 +297,18 @@ export class SchedulerService implements OnApplicationBootstrap, OnModuleDestroy
    */
   async fail(taskId: string, errorMessage: string, minRunAt?: Date): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
-      const task = await tx.scheduledTask.findUniqueOrThrow({ where: { id: taskId } });
+      // OD-058: `findUnique` + an explicit null check, not `findUniqueOrThrow`
+      // — same "tolerate a vanished row" reasoning as `complete`/
+      // `failPermanently` above/below. `fail` needs the row's own
+      // `attemptCount`/`maxAttempts` to compute backoff, so it cannot be a
+      // single `updateMany` the way the other two are; the read-then-write
+      // still happens inside this one transaction, so no new race is
+      // introduced by checking first.
+      const task = await tx.scheduledTask.findUnique({ where: { id: taskId } });
+      if (!task) {
+        this.logger.warn(`fail: task ${taskId} no longer exists — skipping (OD-058)`);
+        return;
+      }
 
       if (task.attemptCount >= task.maxAttempts) {
         await tx.scheduledTask.update({
@@ -295,9 +339,13 @@ export class SchedulerService implements OnApplicationBootstrap, OnModuleDestroy
     });
   }
 
-  /** OD-053: terminal FAILED immediately, bypassing `maxAttempts` — for errors a consumer knows will never succeed on retry. */
+  /**
+   * OD-053: terminal FAILED immediately, bypassing `maxAttempts` — for
+   * errors a consumer knows will never succeed on retry. OD-058:
+   * `updateMany`, same vanished-row tolerance as `complete`.
+   */
   async failPermanently(taskId: string, errorMessage: string): Promise<void> {
-    await this.prisma.scheduledTask.update({
+    const { count } = await this.prisma.scheduledTask.updateMany({
       where: { id: taskId },
       data: {
         status: ScheduledTaskStatus.FAILED,
@@ -306,6 +354,9 @@ export class SchedulerService implements OnApplicationBootstrap, OnModuleDestroy
         leaseExpiresAt: null,
       },
     });
+    if (count === 0) {
+      this.logger.warn(`failPermanently: task ${taskId} no longer exists — skipping (OD-058)`);
+    }
   }
 
   async pollOnce(): Promise<void> {
@@ -320,6 +371,10 @@ export class SchedulerService implements OnApplicationBootstrap, OnModuleDestroy
       for (const task of tasks) {
         const handler = this.handlers.get(task.kind);
 
+        // OD-057: `claim()` now only ever returns rows whose `kind` is in
+        // `this.handlers`, so this branch is unreachable through the normal
+        // claim -> pollOnce path. Left in place defensively (cheap, and
+        // correct if that invariant is ever violated) rather than removed.
         if (!handler) {
           await this.fail(task.id, `No handler registered for kind "${task.kind}"`);
           continue;

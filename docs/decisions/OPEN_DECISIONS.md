@@ -1099,6 +1099,149 @@ one place it's enforced.
 This is a dev-tooling addition, not a Master TZ gameplay behavior — no §
 section to fold it into.
 
+### OD-057 — SchedulerService.claim() Scoped to Registered Kinds · RESOLVED
+Context: B-T1 was asked to fix a cross-suite `scheduled_tasks` race causing
+the full Jest suite to flake under default (parallel-worker) execution —
+intermittent `PrismaClientKnownRequestError`s ("No record was found for ...
+update") in `telegram-notification.service.spec.ts`'s `fail`/`pollOnce`
+tests.
+
+**Diagnosis.** `claim()`'s `SELECT ... FOR UPDATE SKIP LOCKED` scan was
+*global* across `scheduled_tasks`, unscoped by `kind` — documented as "by
+design (§19/OD-008)" in `telegram-notification.service.spec.ts`'s own
+comment, but OD-008's actual resolution (v5.0's timer-mechanism bullet) says
+nothing about cross-kind scope; that unscoped-ness was this service's own
+design choice, not a spec mandate. All Jest workers share one real Postgres
+`scheduled_tasks` table (no per-worker schema/DB isolation) — direct
+instances of `SchedulerService` constructed in `scheduler.service.spec.ts`,
+`telegram-notification.service.spec.ts`, `game-lifecycle.service.spec.ts`,
+and `phase-transition.service.spec.ts` each register only *their own* kind's
+handler (or none at all), but `claim()` would still let any of them grab any
+other suite's due row of a different `kind`, including rows with `runAt` in
+the past that another suite enqueued and had not yet asserted on. Concretely:
+`telegram-notification.service.spec.ts`'s `pollUntilProcessed` loop calls
+`pollOnce()` → `claim()` repeatedly; `claim()` would often return a
+concurrently-running `game-lifecycle`/`phase-transition` spec's
+`PHASE_ADVANCE_CHECK` row (no handler registered on this instance), and
+`pollOnce()`'s "no handler" branch would call `fail()` on it — mutating a row
+another, unrelated test owned. When that owning suite's own (correctly
+kind/gameId-scoped) `afterEach` cleanup then deleted the row — because its
+test had already finished with it — a lagging `fail()`/`complete()` call from
+the first suite, still mid-flight against that now-deleted id, threw Prisma's
+"record not found" error. This is a real production concern too, not only a
+test artifact: once OD-012's `PROCESS_ROLE` worker split is actually built, a
+worker process that intentionally registers only a subset of kinds would
+otherwise still claim — and then uselessly fail-and-requeue — kinds it was
+never meant to own, delaying the correct owner's turn at them.
+
+**Fix (smallest correct option, per this slice's own instructions — the
+production-correctness angle, not a test-only workaround).**
+`SchedulerService.claim()` now computes `registeredKinds =
+[...this.handlers.keys()]` and adds `WHERE kind IN (registeredKinds)` to its
+existing raw query, returning `[]` immediately if no handler is registered at
+all. `FOR UPDATE SKIP LOCKED`, lease duration, backoff, and `FAILED`/DLQ
+semantics are all unchanged — only which rows are even eligible to be
+selected changed. No second retry mechanism, no new public method, no
+signature change.
+
+**Behavior change, as instructed, logged here rather than silently
+absorbed:** in production this changes nothing today — `TelegramNotificationService`
+and `PhaseTransitionService` both register their handler in `onModuleInit`,
+which Nest runs for every provider before `onApplicationBootstrap` (where
+`SchedulerService.start()` begins polling), so the one real process always
+has both kinds registered before its first poll tick. The only genuine
+behavior change is for any `SchedulerService` instance built with a partial
+or empty handler set — i.e., test code, and future per-kind worker
+processes — which is exactly the case this fix targets. One test
+(`scheduler.service.spec.ts`, "pollOnce fails a task with no registered
+handler") asserted the *old* behavior (claim-then-fail an orphaned kind) and
+was rewritten to assert the *new*, correct one (an orphaned-kind task is left
+untouched — `PENDING`, `attemptCount` 0, no lease, no error — rather than
+wastefully claimed and failed); several other tests in that file that called
+`claim()` directly to exercise lease/backoff mechanics in isolation now
+register a no-op handler for `TEST_KIND` first, since `claim()` requires that
+of any consumer, test or real, to claim anything.
+
+**Why this fix alone is not the whole story.** Every spec file's cleanup
+(`game-lifecycle.service.spec.ts`, `phase-transition.service.spec.ts`,
+`rooms.service.spec.ts`) already scoped its `scheduledTask.deleteMany` calls
+by `dedupeKey`/`kind`+`gameId` — none performed an unscoped `deleteMany` on
+the whole table. Fixing `claim()` alone removes cross-*kind* interference
+(e.g. a `TELEGRAM_MESSAGE`-only consumer no longer touches a concurrently
+due `PHASE_ADVANCE_CHECK` row), but `game-lifecycle.service.spec.ts` and
+`phase-transition.service.spec.ts` both legitimately enqueue real
+`TELEGRAM_MESSAGE` rows too (the actual `GAME_FINISHED` outbox path,
+exercised as a side effect of testing phase transitions) — the *same* real
+kind `telegram-notification.service.spec.ts`'s own `SchedulerService`
+instance actively, repeatedly polls via `pollUntilProcessed`. OD-057 cannot
+and should not separate those — in production one dispatcher legitimately
+claims every `TELEGRAM_MESSAGE` row regardless of which game produced it.
+See OD-058 for the remaining piece this exposed.
+
+This is a bug-fix/infra-correctness addition to §19's existing "generic
+scheduled-task worker" mechanism, not a gameplay behavior change — no §
+section to fold it into.
+
+### OD-058 — SchedulerService.complete()/fail()/failPermanently() Tolerate an Already-Deleted Task Row · RESOLVED
+Context: after OD-057 (above) closed the cross-*kind* claim race, running
+the full suite repeatedly under default (parallel-worker) Jest still flaked
+intermittently (confirmed: ~1 in 6-8 runs, isolated by running just
+`src/common/outbox`, `game-lifecycle.service.spec.ts`, and
+`phase-transition.service.spec.ts` together in a loop until it reproduced)
+with `PrismaClientKnownRequestError` ("No record was found for ... update")
+thrown out of `SchedulerService.fail`, crashing `pollOnce` and the test
+awaiting it.
+
+**Diagnosis.** `game-lifecycle.service.spec.ts` and
+`phase-transition.service.spec.ts` both exercise `GameLifecycleService`'s
+real `GAME_FINISHED` path, which enqueues genuine `TELEGRAM_MESSAGE` rows
+(`runAt: new Date()` — immediately due, by design, OD-051) purely to assert
+they were enqueued correctly; they never intend for those rows to actually
+be delivered within the test. `telegram-notification.service.spec.ts`,
+running concurrently in a separate Jest worker process against the same real
+Postgres `scheduled_tasks` table, registers a handler for exactly that real
+kind and actively polls (`pollUntilProcessed`, up to 30 tight-loop
+iterations) — so its `claim()` can and does pick up another suite's
+`TELEGRAM_MESSAGE` row (correctly, per OD-057 — it *is* a kind this instance
+owns) and starts processing it with its own (mocked) delivery handler. If
+the owning suite's own `afterEach` (correctly scoped by
+`kind`+`payload.gameId`) deletes that row in the narrow window before the
+claiming suite's in-flight `complete`/`fail` call finishes, that call's
+`findUniqueOrThrow`/`update` throws Prisma's P2025 ("record not found"),
+uncaught, crashing the whole `pollOnce` loop. This is specifically a
+same-kind, cross-suite collision that OD-057 cannot fix without either (a)
+making `claim()` not claim rows it is genuinely entitled to in production,
+or (b) inventing a test-only discriminator `SchedulerService`'s public API
+has no reason to know about — neither of which this slice's own
+instructions permit.
+
+**Fix.** `complete()` and `failPermanently()` now use `updateMany` (not
+`update`) and check the affected-row count, logging and returning instead of
+throwing when it is `0`. `fail()` switches its `findUniqueOrThrow` to a
+plain `findUnique` with an explicit null check (needed because `fail`, unlike
+the other two, must read the row's own `attemptCount`/`maxAttempts` first to
+compute backoff — it cannot be a single `updateMany`); the read-then-write
+still happens inside `fail`'s existing transaction, so this introduces no new
+race, only tolerance for a row that is already gone by the time either side
+of that read-then-write runs. `FOR UPDATE SKIP LOCKED`, lease duration,
+backoff computation, and `FAILED`/DLQ semantics are all byte-for-byte
+unchanged; no new public method, no signature change, no second retry
+mechanism — a worker that discovers its claimed row vanished simply treats
+that the same way it would treat the row never having existed to begin with.
+
+**Why this is a legitimate production hardening, not a test-only patch.**
+`scheduled_tasks` has no production deleter today, so this exact race cannot
+happen outside tests yet — but a worker silently crashing its poll loop
+because a row it was about to finalize disappeared (a future admin purge
+tool, a retention job, anything) is a real robustness gap regardless of how
+it was first discovered; tolerating "the row I was about to update is gone"
+is strictly safer than propagating an unhandled rejection out of the poll
+loop.
+
+This is a bug-fix/infra-correctness addition to §19's existing "generic
+scheduled-task worker" mechanism, not a gameplay behavior change — no §
+section to fold it into.
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
 None. Every previously blocking decision is resolved (see the addendum above).
@@ -1127,6 +1270,6 @@ None. Every previously blocking decision is resolved (see the addendum above).
   2026-09-25 addendum resolved them.)
 - OD-031–OD-034 are new in v6.0 (MASTER_TZ.md §42.2/§42.1) and non-blocking, each with a
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
-- Total: 44 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
-  OD-037 through OD-054 recorded 2026-09-26/27/28), 0 open+blocking,
-  10 open+non-blocking (54 IDs, OD-001 through OD-054).
+- Total: 48 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
+  OD-037 through OD-058 recorded 2026-09-26/27/28/2026-10-05), 0 open+blocking,
+  10 open+non-blocking (58 IDs, OD-001 through OD-058).
