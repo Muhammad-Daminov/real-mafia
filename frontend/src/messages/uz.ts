@@ -46,6 +46,79 @@ export const uz = {
     note: 'O‘yin ekranlari keyingi bosqichda qo‘shiladi.',
     backHome: 'Bosh sahifaga qaytish',
   },
+  phases: {
+    LOBBY: 'Kutish xonasi',
+    ROLE_REVEAL: 'Rollar e’lon qilinmoqda',
+    NIGHT: 'Tun',
+    NIGHT_RESOLUTION: 'Tun natijalari',
+    MORNING: 'Ertalab',
+    DISCUSSION: 'Muhokama',
+    VOTING: 'Ovoz berish',
+    VOTE_RESOLUTION: 'Ovoz natijalari',
+    LAST_WORD: 'So‘nggi so‘z',
+    EXECUTION: 'Jazolash',
+    WIN_CHECK: 'G‘alaba tekshirilmoqda',
+    GAME_OVER: 'O‘yin tugadi',
+    unknown: 'Noma’lum bosqich',
+  },
+  teams: {
+    TOWN: 'Tinch aholi',
+    MAFIA: 'Mafiya',
+    NEUTRAL: 'Mustaqil',
+  },
+  roles: {
+    MAFIA: {
+      name: 'Mafiya',
+      ability: 'Har kecha boshqa mafiyachilar bilan birga qurbon tanlab, uni o‘ldirasiz.',
+    },
+    DON: {
+      name: 'Don',
+      ability: 'Tungi o‘ldirishni boshqarasiz va kechasi birovning sherif ekanini tekshirishingiz mumkin.',
+    },
+    DETECTIVE: {
+      name: 'Detektiv',
+      ability: 'Har kecha bir o‘yinchini tekshirib, u mafiya ekanini aniqlaysiz.',
+    },
+    SHERIFF: {
+      name: 'Sherif',
+      ability: 'O‘yin davomida bir marta birovni otib o‘ldirishingiz mumkin.',
+    },
+    DOCTOR: {
+      name: 'Doktor',
+      ability: 'Har kecha bir o‘yinchini davolab, uni o‘limdan saqlaysiz.',
+    },
+    BODYGUARD: {
+      name: 'Qo‘riqchi',
+      ability: 'Har kecha bir o‘yinchini qo‘riqlaysiz — unga hujum qilinsa, o‘rniga siz halok bo‘lasiz.',
+    },
+    MANIAC: {
+      name: 'Maniac',
+      ability: 'Har kecha mustaqil ravishda birovni o‘ldirasiz — yolg‘iz qolib qolsangiz g‘alaba qozonasiz.',
+    },
+    JOURNALIST: {
+      name: 'Jurnalist',
+      ability: 'Har kecha ikki o‘yinchini tekshirib, ular bir xil tomonda ekanini bilib olasiz.',
+    },
+    CIVILIAN: {
+      name: 'Tinch aholi',
+      ability: 'Maxsus tungi qobiliyatingiz yo‘q — kunduzi ovoz berib mafiyani toping.',
+    },
+    unknown: {
+      name: 'Noma’lum rol',
+      ability: 'Bu rol haqida ma’lumot topilmadi.',
+    },
+  },
+  roleReveal: {
+    title: 'Sizning rolingiz',
+    teammatesLabel: 'Mafiya a’zolari:',
+    dismiss: 'Tushunarli',
+    roleChip: (roleName: string) => `Rol: ${roleName}`,
+  },
+  gameScreen: {
+    round: (round: number) => `${round}-tur`,
+    noDeadline: '—',
+    stateError: 'O‘yin holatini yuklashda xatolik',
+  },
   errors: {
     ROOM_NOT_FOUND: 'Xona topilmadi',
     HOST_ALREADY_HOSTING: 'Siz allaqachon boshqa xonani boshqaryapsiz',

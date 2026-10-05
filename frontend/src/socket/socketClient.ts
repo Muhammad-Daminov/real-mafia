@@ -4,7 +4,9 @@ import { getToken } from '../api/client';
 import { useAuthStore } from '../store/authStore';
 import { useSocketStore } from '../store/socketStore';
 import { useLobbyStore } from '../store/lobbyStore';
+import { useGameStore } from '../store/gameStore';
 import type { GamePhaseName, HostTransferred, JoinedRoom, LeftRoom, ReadySet } from '../api/rooms';
+import type { GameStateTeammate, RoleCode, Team } from '../api/games';
 
 /**
  * Cap on socket.io-client's built-in reconnection attempts (default:
@@ -55,6 +57,14 @@ export function connectSocket(gameId: string): void {
     // lobbyStore.ts / OD-F2-001), a known limitation, not silently ignored.
     if (useLobbyStore.getState().code) {
       void useLobbyStore.getState().refetchSnapshot();
+    }
+
+    // F3: same "no event replay" gap (§20) applies to a game already in
+    // progress — a (re)connect may have missed ROLE_REVEALED/PHASE_CHANGED
+    // entirely, so resync from GET /games/:gameId/state whenever one is
+    // already known.
+    if (useGameStore.getState().gameId) {
+      void useGameStore.getState().refetchState();
     }
   });
 
@@ -130,6 +140,12 @@ function applyLobbyEvent(eventName: string, payload: unknown): void {
       break;
     case 'PHASE_CHANGED':
       lobby.applyPhaseChanged(payload as { from: GamePhaseName; to: GamePhaseName; round: number });
+      useGameStore.getState().applyPhaseChanged(payload as { from: GamePhaseName; to: GamePhaseName; round: number });
+      break;
+    case 'ROLE_REVEALED':
+      useGameStore
+        .getState()
+        .applyRoleRevealed(payload as { roleCode: RoleCode; team: Team; teammates: GameStateTeammate[] });
       break;
     default:
       break;

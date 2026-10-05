@@ -215,6 +215,69 @@ query, not a new subsystem. This single addition would let the lobby show a
 real roster and let `refetchSnapshot()` fully resync `myIsHost`/`myIsReady`
 on reconnect, closing the gap above too.
 
+## OD-F3-001 — No server-time-offset mechanism for the phase countdown
+
+**Context.** F3 needs a countdown from `phaseEndsAt` (`GET
+/games/:gameId/state`, OD-059) to the active phase's deadline. Checked
+before building: no REST response or socket payload anywhere in this
+codebase carries a `serverTime`/clock-offset field (`GameStateResponse`,
+`PHASE_CHANGED`, `ROLE_REVEALED` all confirmed by reading their actual
+shapes — none has one), and `MASTER_TZ.md` has no `serverTime`/`NTP`/clock
+section either.
+
+**What's implemented (interim default, not invented as final).**
+`game/countdown.ts`'s `remainingSeconds` is a plain `Date.parse(phaseEndsAt)
+- Date.now()` computation — a plain local-clock countdown. This assumes the
+client's clock is reasonably close to the server's; a client with a
+meaningfully skewed system clock sees a countdown that drifts from the
+backend's actual phase-advance timing (which is server-side only and
+unaffected by this gap — only the displayed number can be wrong, never the
+actual phase transition). `game/useCountdown.ts` re-renders this once a
+second; `refetchState()` (called on `PHASE_CHANGED` and on socket
+reconnect) re-anchors it to the backend's own `phaseEndsAt` every time, so
+drift never accumulates past one refetch cycle.
+
+**Left open:** whether the product wants a real server-time-sync mechanism
+(e.g. a `serverTime` field added to `GameStateResponse` and `PHASE_CHANGED`,
+or a dedicated `/time` ping) — a backend addition out of this slice's scope
+("do not modify the backend").
+
+## OD-F3-002 — No way to recover the active `gameId` after a page reload · RESOLVED (F3)
+
+**Context.** F3 asked for "reload recovery... the entry flow must find the
+active gameId; if there is no way to know it after reload, log that as an
+OD and show Home." Checked before building: `lobbyStore.ts`'s `gameId` (and
+every other field) lives in a plain in-memory `zustand` store with no
+`persist` middleware and no `sessionStorage`/`localStorage` write anywhere
+in this file or `gameStore.ts` — only the JWT itself persists
+(`auth/tokenStorage.ts`, OD-F1-003). A full page reload re-runs `App.tsx`
+from scratch with `lobbyStore`/`gameStore` back at their initial state
+(`roomId`/`gameId` both `null`), so `App.tsx`'s routing fell through to
+`HomeScreen` unconditionally — this was already true before F3 (the
+`GameStartedScreen` placeholder had the same gap).
+
+**Resolution.** `auth/gameIdStorage.ts` persists the active `gameId` to
+`sessionStorage` (same tradeoff `OD-F1-003` already accepted for the JWT —
+cleared on tab/WebView close, not indefinitely retained). `gameStore.ts`
+writes it on every successful `GET /games/:gameId/state` (both the normal
+start-of-game path and a reload's own recovery fetch) and clears it on a
+definitive `PLAYER_NOT_IN_GAME` 404 or an explicit "back home" (`reset()`)
+— never on a transient/network failure, so a reload during a brief
+connectivity blip can still retry. `App.tsx` reads it once, on app start
+after auth resolves and only when no lobby/game is already active, calls
+`gameStore.initFromGameId` to recover role/phase/round/`phaseEndsAt`, and
+— only once that succeeds — `connectSocket` to resume receiving
+`ROLE_REVEALED`/`PHASE_CHANGED` live. Routing (`App.tsx`) now shows
+`GameStartedScreen` whenever `gameStore`'s own `gameId` is set, not only
+when `lobbyStore.roomId` is (the latter is never populated on this
+recovery path — there's no `GET /rooms/by-game/:gameId` to rebuild it,
+and the game screen doesn't need `lobbyStore` at all once started).
+
+**Still not solved (same limitation `OD-F3-001` notes):** a *different*
+device/browser/tab (no matching `sessionStorage` entry) has no backend
+"what's my active game" lookup to fall back to — this closes the reload
+case specifically, not every disconnection scenario.
+
 ## Resolved gap (was open, fixed on the backend side): CORS
 
 **Originally flagged here:** `src/main.ts` never called `app.enableCors()`,

@@ -1,7 +1,10 @@
 import { useEffect } from 'react';
 import { useAuthStore } from './store/authStore';
 import { useLobbyStore } from './store/lobbyStore';
+import { useGameStore } from './store/gameStore';
 import { bindTelegramTheme } from './telegram/theme';
+import { readStoredGameId } from './auth/gameIdStorage';
+import { connectSocket } from './socket/socketClient';
 import { uz } from './messages/uz';
 import DebugScreen from './screens/DebugScreen';
 import HomeScreen from './screens/HomeScreen';
@@ -21,12 +24,46 @@ function App() {
   const authError = useAuthStore((s) => s.error);
   const authenticate = useAuthStore((s) => s.authenticate);
   const roomId = useLobbyStore((s) => s.roomId);
+  const gameId = useLobbyStore((s) => s.gameId);
   const currentPhase = useLobbyStore((s) => s.currentPhase);
+  const gameStoreGameId = useGameStore((s) => s.gameId);
 
   useEffect(() => {
     bindTelegramTheme();
     void authenticate();
   }, [authenticate]);
+
+  // F3: once the game has left LOBBY, fetch the "my role + state" snapshot
+  // (GET /games/:gameId/state, OD-059) the game screen needs — a one-time
+  // init per gameId, not on every render.
+  useEffect(() => {
+    if (gameId && currentPhase && currentPhase !== 'LOBBY' && gameStoreGameId !== gameId) {
+      void useGameStore.getState().initFromGameId(gameId);
+    }
+  }, [gameId, currentPhase, gameStoreGameId]);
+
+  // OD-F3-002: reload recovery. `lobbyStore` never persists `roomId`/
+  // `gameId` (only the JWT does, OD-F1-003) — a plain page reload loses
+  // both, so this is the one path that can rediscover an in-progress game:
+  // `auth/gameIdStorage.ts`'s persisted `gameId`, written by `gameStore`
+  // itself on every successful `GET /games/:gameId/state`. Only attempted
+  // once authenticated and only when nothing else (lobby or game) is
+  // already active, so it never fights a fresh create/join flow.
+  useEffect(() => {
+    if (authStatus !== 'authenticated') return;
+    if (roomId || gameStoreGameId) return;
+
+    const stored = readStoredGameId();
+    if (!stored) return;
+
+    void (async () => {
+      await useGameStore.getState().initFromGameId(stored);
+      const s = useGameStore.getState();
+      if (s.gameId === stored && !s.stateError) {
+        connectSocket(stored);
+      }
+    })();
+  }, [authStatus, roomId, gameStoreGameId]);
 
   const isDebug = new URLSearchParams(window.location.search).get('debug') === '1';
 
@@ -61,7 +98,10 @@ function App() {
     );
   }
 
-  if (roomId && currentPhase && currentPhase !== 'LOBBY') {
+  // `gameStoreGameId` alone (no `roomId`) covers the reload-recovery path
+  // above — `lobbyStore` never got a chance to populate, so routing can't
+  // wait on it.
+  if ((roomId && currentPhase && currentPhase !== 'LOBBY') || gameStoreGameId) {
     return <GameStartedScreen />;
   }
 
