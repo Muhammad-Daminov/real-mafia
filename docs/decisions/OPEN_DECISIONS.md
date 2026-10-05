@@ -1242,6 +1242,69 @@ This is a bug-fix/infra-correctness addition to §19's existing "generic
 scheduled-task worker" mechanism, not a gameplay behavior change — no §
 section to fold it into.
 
+### OD-059 — Private ROLE_REVEALED Delivery at StartGame · RESOLVED
+Context: OD-041 (StartGame Slice 2, role assignment) point 5 explicitly
+deferred exposing a player's own dealt role: "§20 ... already defines the
+delivery mechanism for a player's own role: a private WebSocket event on
+the `game:{gameId}:player:{playerId}` channel ... This codebase has no
+WebSocket/realtime layer at all yet ... This slice guarantees the data
+exists and is queryable ... exposing it is explicitly the realtime/
+WebSocket slice's job, not built here." The realtime slice has since shipped
+(OD-047/048/049/050, commit `8906d35`) — `PHASE_CHANGED`, `GAME_FINISHED`,
+`VOTE_CAST`, `MULTIPLE_DEATHS`, and six private per-actor night-action
+result events (`DON_CHECK_RESULT`, `SHERIFF_RESULT`, `GUARD_CONSUMED`,
+`DETECTIVE_RESULT`, `DOCTOR_PROTECT_RESULT`, `JOURNALIST_RESULT`) are all
+delivered — but the one event OD-041 explicitly named and deferred to that
+slice, a player's own role, was never added. `GameRoleAssignment` rows have
+existed and been queryable in the DB since OD-041, but no event, socket
+message, or REST endpoint ever delivers them to the player they belong to —
+confirmed by inspection (no `emitToPlayer`/`sendToPlayer` call anywhere
+referencing role assignment, and `game-engine.module.ts`'s own docstring
+inventory of every event this codebase emits does not list one). This
+blocks any further gameplay-facing work (a frontend game screen, in-app
+chat's `MAFIA_NIGHT` channel membership, §31's reconnect snapshot) equally,
+since all of them need "what is my role" as a precondition — this is the
+single concretely-named, already-committed-to gap closing it.
+
+**Fix.** `RoleAssignmentService.dealRoles` now returns the `{playerId,
+roleCode}[]` it already computes (previously discarded after the `createMany`
+write) instead of `Promise<void>`. `GameLifecycleService.startGame` threads
+it through its own return value (`StartGameWritesResult.roleAssignments`).
+`RoomsService.startGame`'s existing post-commit block (the same one that
+already broadcasts `PHASE_CHANGED` for the `LOBBY -> ROLE_REVEAL` write) now
+also calls a new private helper, `emitRoleReveal`, which sends one private
+`ROLE_REVEALED` event per player via the existing `sendToPlayer(gameId,
+playerId, event, payload)` — the exact mechanism `PhaseTransitionService`
+already uses for private night-action results, not a new delivery channel.
+Payload: `{ roleCode, team, teammates }`, where `team` is `teamForRole(roleCode)`
+(already-existing code in `game-engine/roles.ts`, OD-041's own module) and
+`teammates` is `[]` for every non-`MAFIA`-team player and, for a `MAFIA`-team
+player (`MAFIA` or `DON`), the list of its other team members' `{playerId,
+roleCode}` — per OD-025 (MASTER_TZ §42.2, already resolved by the product
+owner: "immediate at `ROLE_REVEAL` ... the Don mechanic requires mafia
+coordination from night 1"). The `roleAssignments` array is carried as a
+sibling field on `startGameTransaction`'s internal result type, never
+folded into the public `GameStarted` DTO returned over HTTP to whoever
+called the endpoint (almost always the host) — doing so would leak every
+player's role to one caller, the opposite of what "private" means here.
+Idempotent replay (`isNewWrite: false`) emits nothing, same discipline
+`PHASE_CHANGED` already follows for this exact call site.
+
+**What this does not do.** No chat channel, no REST "get my role" endpoint,
+no frontend screen, no reconnect/resync delivery (a player who reconnects
+*after* missing this one-time event still has no way to re-fetch their role
+— the same "no `game_events` replay store" gap OD-047 already logged,
+unresolved here too). No new event for `MULTIPLE_DEATHS`'s public role
+reveal-on-death (OD-024, separately resolved, unaffected). No change to
+`RoleAssignmentService`'s write path, `dealRoles`' Fisher-Yates algorithm,
+or any authorization/lock discipline — `emitRoleReveal` only reads data
+`startGameTransaction` already produced inside its own transaction and
+fires after that transaction has committed, identical in spirit to every
+other `sendToPlayer`/`broadcastToGame` call site's "post-commit only" rule.
+
+This is an addition to §12.1/§20/OD-041 and should be folded into the Master
+TZ at the next revision, same as OD-035–058.
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
 None. Every previously blocking decision is resolved (see the addendum above).
@@ -1270,6 +1333,6 @@ None. Every previously blocking decision is resolved (see the addendum above).
   2026-09-25 addendum resolved them.)
 - OD-031–OD-034 are new in v6.0 (MASTER_TZ.md §42.2/§42.1) and non-blocking, each with a
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
-- Total: 48 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
-  OD-037 through OD-058 recorded 2026-09-26/27/28/2026-10-05), 0 open+blocking,
-  10 open+non-blocking (58 IDs, OD-001 through OD-058).
+- Total: 49 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
+  OD-037 through OD-059 recorded 2026-09-26/27/28/2026-10-05), 0 open+blocking,
+  10 open+non-blocking (59 IDs, OD-001 through OD-059).

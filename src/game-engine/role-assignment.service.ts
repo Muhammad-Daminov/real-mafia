@@ -1,11 +1,16 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, RoleCode } from '@prisma/client';
 import { dealRoles, RoleDistribution } from './roles';
 
 export interface DealRolesInput {
   gameId: string;
   activePlayerIds: string[];
   roleDistribution: RoleDistribution;
+}
+
+export interface DealtRole {
+  playerId: string;
+  roleCode: RoleCode;
 }
 
 /**
@@ -22,7 +27,7 @@ export class RoleAssignmentService {
   async dealRoles(
     tx: Prisma.TransactionClient,
     input: DealRolesInput,
-  ): Promise<void> {
+  ): Promise<DealtRole[]> {
     const assignments = dealRoles(input.activePlayerIds, input.roleDistribution);
 
     await tx.gameRoleAssignment.createMany({
@@ -32,5 +37,12 @@ export class RoleAssignmentService {
         roleCode: a.roleCode,
       })),
     });
+
+    // Returned so the caller (GameLifecycleService -> RoomsService) can
+    // deliver each player's own role privately post-commit (§20, OD-041
+    // point 5's deferred "exposing it is the realtime slice's job" — see
+    // OD-059) without a second read of what was just written in the same
+    // transaction.
+    return assignments;
   }
 }

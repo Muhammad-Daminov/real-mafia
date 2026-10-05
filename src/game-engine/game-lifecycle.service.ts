@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { GamePhaseName, GameStatus, LifeStatus, Prisma, WinnerTeam } from '@prisma/client';
 import { SchedulerService } from '../common/scheduling/scheduler.service';
-import { RoleAssignmentService } from './role-assignment.service';
+import { DealtRole, RoleAssignmentService } from './role-assignment.service';
 import { RoleDistribution } from './roles';
 import {
   PHASE_ADVANCE_TASK_KIND,
@@ -41,6 +41,7 @@ export interface StartGameWritesInput {
 export interface StartGameWritesResult {
   status: GameStatus;
   currentPhase: GamePhaseName;
+  roleAssignments: DealtRole[];
 }
 
 export interface TransitionPhaseInput {
@@ -93,7 +94,7 @@ export class GameLifecycleService {
       data: { lifeStatus: LifeStatus.ALIVE },
     });
 
-    await this.roleAssignment.dealRoles(tx, {
+    const roleAssignments = await this.roleAssignment.dealRoles(tx, {
       gameId: input.gameId,
       activePlayerIds: input.activePlayerIds,
       roleDistribution: input.roleDistribution,
@@ -125,7 +126,7 @@ export class GameLifecycleService {
 
     await this.enqueuePhaseAdvanceCheck(tx, input.gameId, endsAt);
 
-    return { status, currentPhase };
+    return { status, currentPhase, roleAssignments };
   }
 
   /**

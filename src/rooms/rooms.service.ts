@@ -11,6 +11,8 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { CommandRequestService } from '../common/command-requests/command-request.service';
 import { GameLifecycleService } from '../game-engine/game-lifecycle.service';
+import { DealtRole } from '../game-engine/role-assignment.service';
+import { Team, teamForRole } from '../game-engine/roles';
 import { RealtimeEventService } from '../common/realtime/realtime-event.service';
 import { RoomErrorCode, RoomException } from './rooms.errors';
 import {
@@ -48,6 +50,17 @@ const ACTIVE_PLAYER_FILTER = { not: LifeStatus.LEFT };
 interface WithEmit<T> {
   response: T;
   isNewWrite: boolean;
+}
+
+/**
+ * startGame-only: role assignments must never ride in `GameStarted` (the
+ * HTTP response returned to whoever called the endpoint — almost always the
+ * host) since that would leak every player's role to one caller. Carried
+ * as a sibling field instead, consumed only by `startGame`'s own post-commit
+ * per-player `sendToPlayer` loop — never serialized into any HTTP response.
+ */
+interface StartGameTransactionResult extends WithEmit<GameStarted> {
+  roleAssignments: DealtRole[];
 }
 
 export interface CreateRoomInput {
@@ -945,7 +958,12 @@ export class RoomsService {
     };
 
     try {
-      const { response, isNewWrite } = await this.startGameTransaction(input, room, gameId, key);
+      const { response, isNewWrite, roleAssignments } = await this.startGameTransaction(
+        input,
+        room,
+        gameId,
+        key,
+      );
 
       if (isNewWrite) {
         // §20/OD-047/OD-049: reuses phase 1's `PHASE_CHANGED` event verbatim
@@ -959,6 +977,8 @@ export class RoomsService {
           to: response.currentPhase,
           round: 0,
         });
+
+        this.emitRoleReveal(gameId, roleAssignments);
       }
 
       return response;
@@ -977,12 +997,44 @@ export class RoomsService {
     }
   }
 
+  /**
+   * §20/OD-041 point 5 ("exposing [a player's own role] is explicitly the
+   * realtime slice's job, not built here") / OD-059: one private
+   * `ROLE_REVEALED` event per dealt player, post-commit, same discipline as
+   * every other `sendToPlayer` call site in this codebase. OD-025 (resolved,
+   * MASTER_TZ §42.2): mafia-team coordination is immediate at ROLE_REVEAL,
+   * not deferred to night 1 — a MAFIA-team player's own payload also lists
+   * its teammates (id + role, so Don and regular Mafia can recognize each
+   * other), never players outside its own team.
+   */
+  private emitRoleReveal(gameId: string, roleAssignments: DealtRole[]): void {
+    const teams = new Map<string, Team>(
+      roleAssignments.map((a) => [a.playerId, teamForRole(a.roleCode)]),
+    );
+
+    for (const assignment of roleAssignments) {
+      const team = teams.get(assignment.playerId)!;
+      const teammates =
+        team === 'MAFIA'
+          ? roleAssignments
+              .filter((a) => a.playerId !== assignment.playerId && teams.get(a.playerId) === 'MAFIA')
+              .map((a) => ({ playerId: a.playerId, roleCode: a.roleCode }))
+          : [];
+
+      this.realtime.sendToPlayer(gameId, assignment.playerId, 'ROLE_REVEALED', {
+        roleCode: assignment.roleCode,
+        team,
+        teammates,
+      });
+    }
+  }
+
   private async startGameTransaction(
     input: StartGameInput,
     room: { id: string; rulesetMode: RulesetMode },
     gameId: string,
     key: { userId: string; endpoint: string; clientRequestId: string },
-  ): Promise<WithEmit<GameStarted>> {
+  ): Promise<StartGameTransactionResult> {
     return this.prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<{ id: string; status: string }[]>`
         SELECT id, status FROM games WHERE id = ${gameId}::uuid FOR UPDATE
@@ -995,7 +1047,7 @@ export class RoomsService {
       const replay = await this.commandRequests.findExisting(tx, key);
 
       if (replay) {
-        return { response: replay.body as unknown as GameStarted, isNewWrite: false };
+        return { response: replay.body as unknown as GameStarted, isNewWrite: false, roleAssignments: [] };
       }
 
       if (locked[0].status !== 'LOBBY') {
@@ -1067,7 +1119,7 @@ export class RoomsService {
       // role assignments) are Game-Engine-only writes — performed here, still
       // inside this same transaction/lock, so a game can never be observed
       // RUNNING without roles dealt (no separate step, no undealt window).
-      const { status, currentPhase } = await this.gameLifecycle.startGame(tx, {
+      const { status, currentPhase, roleAssignments } = await this.gameLifecycle.startGame(tx, {
         gameId,
         activePlayerIds: activePlayers.map((p) => p.id),
         roleDistribution,
@@ -1105,7 +1157,7 @@ export class RoomsService {
         body: response as unknown as Prisma.InputJsonValue,
       });
 
-      return { response, isNewWrite: true };
+      return { response, isNewWrite: true, roleAssignments };
     });
   }
 

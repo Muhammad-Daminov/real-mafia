@@ -6,6 +6,7 @@ import { CommandRequestService } from '../common/command-requests/command-reques
 import { SchedulerService } from '../common/scheduling/scheduler.service';
 import { RoleAssignmentService } from '../game-engine/role-assignment.service';
 import { GameLifecycleService } from '../game-engine/game-lifecycle.service';
+import { teamForRole } from '../game-engine/roles';
 import { RoomsService } from './rooms.service';
 import { RoomErrorCode, RoomException } from './rooms.errors';
 import { RealtimeEventService } from '../common/realtime/realtime-event.service';
@@ -2077,6 +2078,97 @@ describe('RoomsService (integration)', () => {
       expect(assignments).toHaveLength(0); // role dealing rolled back too — no partial deal left behind
 
       expect(realtime.broadcastToGame).not.toHaveBeenCalled();
+      expect(realtime.sendToPlayer).not.toHaveBeenCalled();
+    });
+
+    it('startGame sends each player a private ROLE_REVEALED event matching their own dealt role (OD-059)', async () => {
+      const host = await makeUser();
+      const others = await Promise.all([makeUser(), makeUser(), makeUser()]);
+      const room = await createValidRoom(host.id, { maxPlayers: 8 });
+      for (const other of others) {
+        await service.joinRoom({ userId: other.id, code: room.code, clientRequestId: randomUUID() });
+      }
+      realtime.sendToPlayer.mockClear();
+
+      await service.startGame({ userId: host.id, roomId: room.roomId, clientRequestId: randomUUID() });
+
+      const assignments = await prisma.gameRoleAssignment.findMany({ where: { gameId: room.gameId } });
+      expect(assignments).toHaveLength(4); // 1 mafia, 1 doctor, 2 civilian at 4 players
+
+      expect(realtime.sendToPlayer).toHaveBeenCalledTimes(4);
+      for (const assignment of assignments) {
+        expect(realtime.sendToPlayer).toHaveBeenCalledWith(
+          room.gameId,
+          assignment.playerId,
+          'ROLE_REVEALED',
+          expect.objectContaining({ roleCode: assignment.roleCode, team: teamForRole(assignment.roleCode) }),
+        );
+      }
+    });
+
+    it("startGame's ROLE_REVEALED lists mafia-team teammates to each other, and an empty list to everyone else (OD-025/OD-059)", async () => {
+      const host = await makeUser();
+      const others = await Promise.all([makeUser(), makeUser(), makeUser(), makeUser(), makeUser(), makeUser()]);
+      const room = await createValidRoom(host.id, { maxPlayers: 8 });
+      for (const other of others) {
+        await service.joinRoom({ userId: other.id, code: room.code, clientRequestId: randomUUID() });
+      }
+      realtime.sendToPlayer.mockClear();
+
+      await service.startGame({ userId: host.id, roomId: room.roomId, clientRequestId: randomUUID() });
+
+      const assignments = await prisma.gameRoleAssignment.findMany({ where: { gameId: room.gameId } });
+      expect(assignments).toHaveLength(7); // mafia:1, don:1, detective:1, doctor:1, civilian:3 at 7 players
+
+      const mafiaTeam = assignments.filter((a) => teamForRole(a.roleCode) === 'MAFIA');
+      expect(mafiaTeam).toHaveLength(2); // MAFIA + DON
+
+      for (const assignment of assignments) {
+        const expectedTeammates =
+          teamForRole(assignment.roleCode) === 'MAFIA'
+            ? expect.arrayContaining(
+                mafiaTeam
+                  .filter((m) => m.playerId !== assignment.playerId)
+                  .map((m) => ({ playerId: m.playerId, roleCode: m.roleCode })),
+              )
+            : [];
+
+        expect(realtime.sendToPlayer).toHaveBeenCalledWith(
+          room.gameId,
+          assignment.playerId,
+          'ROLE_REVEALED',
+          expect.objectContaining({ teammates: expectedTeammates }),
+        );
+      }
+
+      // Every non-mafia player's teammates list is genuinely empty, not just
+      // "doesn't include a mafia member" — a stronger assertion than the
+      // arrayContaining check above gives for the MAFIA/DON pair.
+      const civilianOrTown = assignments.find((a) => teamForRole(a.roleCode) !== 'MAFIA')!;
+      expect(realtime.sendToPlayer).toHaveBeenCalledWith(
+        room.gameId,
+        civilianOrTown.playerId,
+        'ROLE_REVEALED',
+        expect.objectContaining({ teammates: [] }),
+      );
+    });
+
+    it('startGame never reveals one player\'s role in the HTTP response returned for another player\'s/the host\'s own call', async () => {
+      const host = await makeUser();
+      const others = await Promise.all([makeUser(), makeUser(), makeUser()]);
+      const room = await createValidRoom(host.id, { maxPlayers: 8 });
+      for (const other of others) {
+        await service.joinRoom({ userId: other.id, code: room.code, clientRequestId: randomUUID() });
+      }
+
+      const result = await service.startGame({ userId: host.id, roomId: room.roomId, clientRequestId: randomUUID() });
+
+      // GameStarted's actual declared shape (roomId/gameId/status/currentPhase/
+      // playerCount/rulesVersion/startedAt) carries no role data at all — this
+      // guards specifically against a future edit accidentally spreading
+      // `roleAssignments` into the public response.
+      expect(result).not.toHaveProperty('roleAssignments');
+      expect(JSON.stringify(result)).not.toMatch(/MAFIA|CIVILIAN|DETECTIVE|DOCTOR|roleCode/);
     });
 
     it('a room event broadcast for one game never carries a different room\'s gameId (scoping)', async () => {
