@@ -102,8 +102,18 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
       set(applySnapshot(snapshot));
     } catch (error) {
       if (seq !== stateSeq) return;
+      // A definitive "not a member" also clears `gameId` itself, not just
+      // storage — otherwise `App.tsx`'s routing (gated on `gameStore.gameId`
+      // being set) stays stuck on a broken game screen instead of falling
+      // through to Home, the task's own explicit fallback for "no way to
+      // recover". A transient/network failure leaves `gameId` alone so a
+      // retry still has something to retry.
+      set({
+        stateLoading: false,
+        stateError: error instanceof Error ? error.message : String(error),
+        ...(isNotAMember(error) ? { gameId: null } : {}),
+      });
       if (isNotAMember(error)) writeStoredGameId(null);
-      set({ stateLoading: false, stateError: error instanceof Error ? error.message : String(error) });
     }
   },
 
@@ -121,8 +131,18 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
       set(applySnapshot(snapshot));
     } catch (error) {
       if (seq !== stateSeq) return;
+      // A definitive "not a member" also clears `gameId` itself, not just
+      // storage — otherwise `App.tsx`'s routing (gated on `gameStore.gameId`
+      // being set) stays stuck on a broken game screen instead of falling
+      // through to Home, the task's own explicit fallback for "no way to
+      // recover". A transient/network failure leaves `gameId` alone so a
+      // retry still has something to retry.
+      set({
+        stateLoading: false,
+        stateError: error instanceof Error ? error.message : String(error),
+        ...(isNotAMember(error) ? { gameId: null } : {}),
+      });
       if (isNotAMember(error)) writeStoredGameId(null);
-      set({ stateLoading: false, stateError: error instanceof Error ? error.message : String(error) });
     }
   },
 

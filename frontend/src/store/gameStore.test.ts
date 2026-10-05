@@ -77,6 +77,29 @@ describe('gameStore — initFromGameId', () => {
     await useGameStore.getState().initFromGameId('game-2');
     expect(useGameStore.getState().roleRevealDismissed).toBe(false);
   });
+
+  it('clears gameId back to null on a definitive PLAYER_NOT_IN_GAME 404, so routing falls through to Home', async () => {
+    const { ApiError } = await import('../api/client');
+    const { useGameStore } = await import('./gameStore');
+    getGameStateMock.mockRejectedValue(new ApiError('Siz bu o‘yinda emassiz', 404, 'PLAYER_NOT_IN_GAME'));
+
+    await useGameStore.getState().initFromGameId('stale-game-id');
+
+    const s = useGameStore.getState();
+    expect(s.gameId).toBeNull(); // not left dangling — App.tsx's routing is gated on this
+    expect(s.stateError).toBeTruthy();
+  });
+
+  it('leaves gameId set on a transient/network failure, so a retry still has something to retry', async () => {
+    const { useGameStore } = await import('./gameStore');
+    getGameStateMock.mockRejectedValue(new Error('network error'));
+
+    await useGameStore.getState().initFromGameId('game-1');
+
+    const s = useGameStore.getState();
+    expect(s.gameId).toBe('game-1');
+    expect(s.stateError).toBeTruthy();
+  });
 });
 
 describe('gameStore — applyRoleRevealed', () => {
