@@ -3,6 +3,7 @@ import { useAuthStore } from './store/authStore';
 import { useLobbyStore } from './store/lobbyStore';
 import { useGameStore } from './store/gameStore';
 import { bindTelegramTheme } from './telegram/theme';
+import { isDebugMode, persistDevModeFromUrl } from './debugFlags';
 import { readStoredGameId } from './auth/gameIdStorage';
 import { readStoredRoomCode } from './auth/roomCodeStorage';
 import { connectSocket } from './socket/socketClient';
@@ -18,7 +19,11 @@ import './styles/mafia.css';
  * reachable unchanged (`screens/DebugScreen.tsx`); otherwise the view is
  * derived from `lobbyStore`'s state — no router library, just three
  * mutually-exclusive screens (home / lobby / started) driven by whether a
- * room is active and, once active, its `currentPhase`.
+ * room is active and, once active, its `currentPhase`. `?debug=1` and
+ * `?dev=1` are independent (`debugFlags.ts`) — `?dev=1` leaves this normal
+ * routing alone and only gates `LobbyScreen`'s dev-bots panel, specifically
+ * so it can be reached (unlike `?debug=1`, which routes away from Lobby
+ * entirely).
  */
 function App() {
   const authStatus = useAuthStore((s) => s.status);
@@ -31,6 +36,10 @@ function App() {
 
   useEffect(() => {
     bindTelegramTheme();
+    // ?dev=1 at load persists for the rest of this session (sessionStorage)
+    // so later in-app navigation, which drops the query string, still shows
+    // dev-only UI (the Lobby's dev-bots panel) — see debugFlags.ts.
+    persistDevModeFromUrl(window.location.search);
     void authenticate();
   }, [authenticate]);
 
@@ -86,9 +95,7 @@ function App() {
     })();
   }, [authStatus, roomId, gameStoreGameId]);
 
-  const isDebug = new URLSearchParams(window.location.search).get('debug') === '1';
-
-  if (isDebug) {
+  if (isDebugMode(window.location.search)) {
     return <DebugScreen />;
   }
 

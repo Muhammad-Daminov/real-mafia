@@ -7,24 +7,16 @@ import { leaveRoom, setReady, startGame, type RoomPlayerSummary } from '../api/r
 import { fillBots } from '../api/devTools';
 import { ApiError } from '../api/client';
 import { describeRoomError } from '../errors/roomErrorMessages';
-
-/**
- * F2.2: mirrors `App.tsx`'s own inline `?debug=1` check (the same gate that
- * keeps `DebugScreen` reachable) — exported as a pure function so the
- * dev-only bots panel's visibility is unit-testable without rendering the
- * whole screen. Deliberately not shared with `App.tsx` (no new shared
- * module for a one-line check used in two places).
- */
-export function isDebugMode(search: string): boolean {
-  return new URLSearchParams(search).get('debug') === '1';
-}
+import { isDevMode } from '../debugFlags';
 
 interface DevBotsPanelProps {
   code: string;
 }
 
 /**
- * Dev-only (`?debug=1`) control for `POST /dev/rooms/:code/fill-bots`
+ * Dev-only (`?dev=1`, or `?debug=1`'s standalone `DebugScreen` never
+ * reaches this component at all — see `debugFlags.ts`) control for
+ * `POST /dev/rooms/:code/fill-bots`
  * (../../../src/dev-tools/dev-tools.controller.ts, B-D1, backend commit
  * f7d95e2). Deliberately plain English, no `uz` strings — this panel never
  * appears for a real user. After a successful call this does nothing else:
@@ -280,7 +272,7 @@ function LobbyScreen() {
 
       {actionError && <p className="mafia-banner mafia-banner--error">{actionError}</p>}
 
-      {isDebugMode(window.location.search) && lobby.code && <DevBotsPanel code={lobby.code} />}
+      {isDevMode(window.location.search) && lobby.code && <DevBotsPanel code={lobby.code} />}
     </div>
   );
 }
