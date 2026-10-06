@@ -15,3 +15,17 @@ export function requireApiUrl(): string {
 
   return raw.replace(/\/+$/, '');
 }
+
+/**
+ * The backend origin's host only (e.g. `api.example.com`) — for the debug
+ * screen's env-visibility panel. Never throws: an unset/malformed
+ * `VITE_API_URL` renders as `'—'` there rather than crashing the screen
+ * that exists specifically to diagnose a misconfigured env.
+ */
+export function apiUrlHost(): string {
+  try {
+    return new URL(requireApiUrl()).host;
+  } catch {
+    return '—';
+  }
+}

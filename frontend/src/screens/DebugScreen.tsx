@@ -1,9 +1,24 @@
 import { useEffect, useState } from 'react';
-import { useAuthStore } from '../store/authStore';
+import { useAuthStore, describeAuthFailure } from '../store/authStore';
 import { useSocketStore } from '../store/socketStore';
 import { connectSocket, disconnectSocket } from '../socket/socketClient';
-import { ApiError } from '../api/client';
+import { ApiError, getStoredToken } from '../api/client';
 import { createRoom, joinRoom, leaveRoom, setReady, type CreatedRoom } from '../api/rooms';
+import { getRawInitData } from '../telegram/initData';
+import { apiUrlHost } from '../config/env';
+
+/** `initData`'s length only, never its content (it carries the user's
+ * Telegram profile fields) — `null` if unavailable (not in Telegram, or no
+ * initData at all). Read once, not on every render: `getRawInitData()`
+ * runs the `@telegram-apps/sdk` bridge's `init()`, which is idempotent but
+ * still a real side effect, not worth repeating per render. */
+function readInitDataLength(): number | null {
+  try {
+    return getRawInitData().length;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Slices F1/F1.5/F1.6's debug screen, unchanged by F2 other than moving out
@@ -15,8 +30,9 @@ import { createRoom, joinRoom, leaveRoom, setReady, type CreatedRoom } from '../
  * socket connects with.
  */
 function DebugScreen() {
-  const { status: authStatus, user, error: authError, authenticate } = useAuthStore();
+  const { status: authStatus, user, error: authError, failure: authFailure, authenticate } = useAuthStore();
   const { status: socketStatus, lastError: socketError, eventLog } = useSocketStore();
+  const [initDataLength] = useState<number | null>(() => readInitDataLength());
   const [gameIdInput, setGameIdInput] = useState('');
   const [connectedGameId, setConnectedGameId] = useState<string | null>(null);
   const [createdRoom, setCreatedRoom] = useState<CreatedRoom | null>(null);
@@ -131,9 +147,21 @@ function DebugScreen() {
           </p>
         )}
         {authStatus === 'error' && authError && <p style={{ color: '#f87171' }}>error: {authError}</p>}
+        {/* Real cause, plain English — e.g. "POST /auth/telegram -> 400
+            INIT_DATA_INVALID" or "network error (request never reached the
+            server)". Debug-only; normal users never see this (App.tsx's uz
+            messages are unchanged). */}
+        {authFailure && (
+          <p style={{ color: '#fbbf24' }}>detail: {describeAuthFailure(authFailure)}</p>
+        )}
         {authStatus === 'error' && (
           <button onClick={() => void authenticate()}>Retry auth</button>
         )}
+
+        <p style={{ marginTop: '12px', color: '#999' }}>
+          stored token found: {String(getStoredToken() !== null)} · initData length: {initDataLength ?? 'n/a'} ·
+          VITE_API_URL host: {apiUrlHost()}
+        </p>
       </section>
 
       <section style={{ marginTop: '16px', padding: '12px', border: '1px solid #333', borderRadius: '8px' }}>
