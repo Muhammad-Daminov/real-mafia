@@ -78,6 +78,12 @@ export function connectSocket(gameId: string): void {
     if (useGameStore.getState().gameId) {
       void useGameStore.getState().refetchState();
     }
+
+    // F4.1: same reasoning — the roster (GET /rooms/:code, lifeStatus) may
+    // also be stale after a missed event (a death during the drop).
+    if (useGameStore.getState().roomCode) {
+      void useGameStore.getState().refetchRoster();
+    }
   });
 
   instance.on('connect_error', (error: Error) => {

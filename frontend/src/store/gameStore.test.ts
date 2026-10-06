@@ -1,19 +1,46 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getGameStateMock = vi.fn();
+const getRoomByCodeMock = vi.fn();
 
 vi.mock('../api/games', async () => {
   const actual = await vi.importActual<typeof import('../api/games')>('../api/games');
   return { ...actual, getGameState: (...args: unknown[]) => getGameStateMock(...args) };
 });
 
+vi.mock('../api/rooms', async () => {
+  const actual = await vi.importActual<typeof import('../api/rooms')>('../api/rooms');
+  return { ...actual, getRoomByCode: (...args: unknown[]) => getRoomByCodeMock(...args) };
+});
+
 beforeEach(() => {
   getGameStateMock.mockReset();
+  getRoomByCodeMock.mockReset();
 });
 
 afterEach(() => {
   vi.resetModules();
+  vi.useRealTimers();
 });
+
+function makeRoomSummary(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    roomId: 'room-1',
+    code: 'ABCDEF',
+    visibility: 'PRIVATE',
+    status: 'OPEN',
+    rulesetMode: 'NORMAL',
+    maxPlayers: 4,
+    gameId: 'game-1',
+    gameStatus: 'RUNNING',
+    playerCount: 2,
+    players: [
+      { playerId: 'player-1', displayName: 'Me', avatarUrl: null, isReady: true, isHost: true, joinedAt: '2026-01-01T00:00:00.000Z', lifeStatus: 'ALIVE' },
+      { playerId: 'player-2', displayName: 'Other', avatarUrl: null, isReady: true, isHost: false, joinedAt: '2026-01-01T00:01:00.000Z', lifeStatus: 'ALIVE' },
+    ],
+    ...overrides,
+  };
+}
 
 function makeSnapshot(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -270,5 +297,95 @@ describe('gameStore — applyPhaseChanged clears submission/result state (F4)', 
     useGameStore.getState().applyPhaseChanged({ from: 'DISCUSSION', to: 'NIGHT', round: 2 });
 
     expect(useGameStore.getState().nightResult).toBeNull();
+  });
+});
+
+describe('gameStore — setRoomCode / refetchRoster (F4.1)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  it('setRoomCode sets roomCode and schedules a debounced initial roster fetch', async () => {
+    const { useGameStore } = await import('./gameStore');
+    getRoomByCodeMock.mockResolvedValue(makeRoomSummary());
+
+    useGameStore.getState().setRoomCode('ABCDEF');
+
+    expect(useGameStore.getState().roomCode).toBe('ABCDEF');
+    expect(getRoomByCodeMock).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(getRoomByCodeMock).toHaveBeenCalledWith('ABCDEF');
+    expect(useGameStore.getState().roster).toEqual(makeRoomSummary().players);
+  });
+
+  it('refetchRoster is a no-op when roomCode is not known', async () => {
+    const { useGameStore } = await import('./gameStore');
+    await useGameStore.getState().refetchRoster();
+    expect(getRoomByCodeMock).not.toHaveBeenCalled();
+  });
+
+  it('a burst of applyPhaseChanged calls coalesces into one roster refetch', async () => {
+    const { useGameStore } = await import('./gameStore');
+    getRoomByCodeMock.mockResolvedValue(makeRoomSummary());
+    useGameStore.getState().setRoomCode('ABCDEF');
+    await vi.advanceTimersByTimeAsync(150);
+    getRoomByCodeMock.mockClear();
+
+    useGameStore.getState().applyPhaseChanged({ from: 'NIGHT', to: 'NIGHT_RESOLUTION', round: 1 });
+    await vi.advanceTimersByTimeAsync(50);
+    useGameStore.getState().applyPhaseChanged({ from: 'NIGHT_RESOLUTION', to: 'LAST_WORD', round: 1 });
+
+    expect(getRoomByCodeMock).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(150);
+    expect(getRoomByCodeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats an absent `players` field as "no roster" rather than crashing', async () => {
+    const { useGameStore } = await import('./gameStore');
+    getRoomByCodeMock.mockResolvedValue(makeRoomSummary({ players: undefined }));
+    useGameStore.getState().setRoomCode('ABCDEF');
+
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(useGameStore.getState().roster).toBeNull();
+  });
+
+  it('drops a roster response superseded by a later refetch before it resolves', async () => {
+    const { useGameStore } = await import('./gameStore');
+    useGameStore.getState().setRoomCode('ABCDEF');
+    await vi.advanceTimersByTimeAsync(150);
+    getRoomByCodeMock.mockClear();
+
+    let resolveFirst!: (value: ReturnType<typeof makeRoomSummary>) => void;
+    getRoomByCodeMock.mockReturnValueOnce(new Promise((resolve) => (resolveFirst = resolve)));
+    const firstRefetch = useGameStore.getState().refetchRoster();
+
+    getRoomByCodeMock.mockResolvedValueOnce(
+      makeRoomSummary({ players: [{ playerId: 'player-1', displayName: 'Me', avatarUrl: null, isReady: true, isHost: true, joinedAt: '2026-01-01T00:00:00.000Z', lifeStatus: 'DEAD' }] }),
+    );
+    await useGameStore.getState().refetchRoster(); // second call resolves first
+
+    expect(useGameStore.getState().roster).toEqual([
+      { playerId: 'player-1', displayName: 'Me', avatarUrl: null, isReady: true, isHost: true, joinedAt: '2026-01-01T00:00:00.000Z', lifeStatus: 'DEAD' },
+    ]);
+
+    resolveFirst(makeRoomSummary()); // stale — must not clobber state
+    await firstRefetch;
+
+    expect(useGameStore.getState().roster![0]!.lifeStatus).toBe('DEAD');
+  });
+
+  it('reset() clears roomCode/roster and persists the clear', async () => {
+    const { useGameStore } = await import('./gameStore');
+    getRoomByCodeMock.mockResolvedValue(makeRoomSummary());
+    useGameStore.getState().setRoomCode('ABCDEF');
+    await vi.advanceTimersByTimeAsync(150);
+
+    useGameStore.getState().reset();
+
+    expect(useGameStore.getState().roomCode).toBeNull();
+    expect(useGameStore.getState().roster).toBeNull();
   });
 });

@@ -2,9 +2,15 @@ import { create } from 'zustand';
 import { ApiError } from '../api/client';
 import { getGameState, type GameStateResponse, type GameStateTeammate, type LifeStatus, type RoleCode, type Team } from '../api/games';
 import type { SubmittedNightAction } from '../api/nightActions';
-import type { GamePhaseName, GameStatus } from '../api/rooms';
+import { getRoomByCode, type GamePhaseName, type GameStatus, type RoomPlayerSummary } from '../api/rooms';
 import { writeStoredGameId } from '../auth/gameIdStorage';
+import { writeStoredRoomCode } from '../auth/roomCodeStorage';
 import type { NightActionType } from '../game/nightAbility';
+
+/** Trailing debounce for roster refetches triggered in quick succession
+ * (e.g. a socket reconnect landing right after a PHASE_CHANGED) — same
+ * value/reasoning as `lobbyStore.ts`'s `REFETCH_DEBOUNCE_MS`. */
+const ROSTER_REFETCH_DEBOUNCE_MS = 150;
 
 export interface MySubmittedAction {
   actionType: NightActionType;
@@ -45,6 +51,18 @@ export interface GameState {
    * when a fresh NIGHT starts (not on every phase change, unlike
    * `mySubmittedAction`). */
   nightResult: NightResult | null;
+  /** F4.1: the room code `GET /rooms/:code`'s roster read is keyed by —
+   * `lobbyStore.code` for the normal in-session path, or
+   * `auth/roomCodeStorage.ts` on a reload (see `setRoomCode`). `null` means
+   * the roster is permanently unavailable for this session (no stored code
+   * to recover from) — a distinct, honest state from "loading". */
+  roomCode: string | null;
+  /** The last successful `GET /rooms/:code` roster — `null` before the
+   * first fetch resolves. `RoomPlayerSummary.lifeStatus` is what
+   * `game/nightTargets.ts` filters on; never carries `roleCode`/`team`. */
+  roster: RoomPlayerSummary[] | null;
+  rosterLoading: boolean;
+  rosterError: string | null;
   stateLoading: boolean;
   stateError: string | null;
 }
@@ -64,6 +82,17 @@ interface GameActions {
   applyPhaseChanged: (payload: { from: GamePhaseName; to: GamePhaseName; round: number }) => void;
   applyActionSubmitted: (action: SubmittedNightAction) => void;
   applyNightResult: (event: string, payload: Record<string, unknown>) => void;
+  /** Sets the room code the roster is keyed by and persists it (so a
+   * reload can recover it, OD-F4-001) — called once from `App.tsx` as soon
+   * as the code is known (normal path: `lobbyStore.code`; reload path:
+   * `auth/roomCodeStorage.ts`). Also schedules an immediate (debounced)
+   * roster refetch. */
+  setRoomCode: (code: string) => void;
+  /** Re-fetches `GET /rooms/:code`'s roster for the already-known
+   * `roomCode` — called on game start, every `PHASE_CHANGED`, and every
+   * socket reconnect (no event replay on the backend, same reasoning as
+   * `refetchState`). A no-op when `roomCode` isn't known yet. */
+  refetchRoster: () => Promise<void>;
   dismissRoleReveal: () => void;
   reset: () => void;
 }
@@ -82,6 +111,10 @@ const initialState: GameState = {
   roleRevealDismissed: false,
   mySubmittedAction: null,
   nightResult: null,
+  roomCode: null,
+  roster: null,
+  rosterLoading: false,
+  rosterError: null,
   stateLoading: false,
   stateError: null,
 };
@@ -117,7 +150,23 @@ function isNotAMember(error: unknown): boolean {
   return error instanceof ApiError && error.code === 'PLAYER_NOT_IN_GAME';
 }
 
-export const useGameStore = create<GameState & GameActions>((set, get) => ({
+/** Independent of `stateSeq` — a roster refetch and a state refetch are
+ * separate request pipelines and must not invalidate each other. Same
+ * "bump on fetch, check after resolve" pattern as `stateSeq`/
+ * `lobbyStore.ts`'s `refetchSeq`. */
+let rosterSeq = 0;
+let rosterRefetchTimer: ReturnType<typeof setTimeout> | null = null;
+
+export const useGameStore = create<GameState & GameActions>((set, get) => {
+  function scheduleRosterRefetch(): void {
+    if (rosterRefetchTimer) clearTimeout(rosterRefetchTimer);
+    rosterRefetchTimer = setTimeout(() => {
+      rosterRefetchTimer = null;
+      void get().refetchRoster();
+    }, ROSTER_REFETCH_DEBOUNCE_MS);
+  }
+
+  return {
   ...initialState,
 
   initFromGameId: async (gameId) => {
@@ -195,6 +244,10 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
     // phase's deadline. Fire-and-forget; `refetchState` itself guards
     // against out-of-order responses.
     void get().refetchState();
+    // F4.1: a death may have just happened (NIGHT -> NIGHT_RESOLUTION) —
+    // the roster's lifeStatus is stale until refetched. No-ops via
+    // `refetchRoster` itself if `roomCode` isn't known yet.
+    scheduleRosterRefetch();
   },
 
   applyActionSubmitted: (action) => {
@@ -211,11 +264,41 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
     set({ nightResult: { event, payload } });
   },
 
+  setRoomCode: (code) => {
+    writeStoredRoomCode(code);
+    set({ roomCode: code });
+    scheduleRosterRefetch();
+  },
+
+  refetchRoster: async () => {
+    const code = get().roomCode;
+    if (!code) return;
+
+    const seq = ++rosterSeq;
+    set({ rosterLoading: true, rosterError: null });
+
+    try {
+      const summary = await getRoomByCode(code);
+      if (seq !== rosterSeq) return; // superseded
+
+      // `players` is omitted (not `[]`) for a non-member (OD-055) — by the
+      // time this runs the caller is always an active game member, but
+      // treat an absent roster as "not yet available" rather than crashing.
+      set({ roster: summary.players ?? null, rosterLoading: false });
+    } catch (error) {
+      if (seq !== rosterSeq) return;
+      set({ rosterLoading: false, rosterError: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
   dismissRoleReveal: () => set({ roleRevealDismissed: true }),
 
   reset: () => {
     stateSeq++; // invalidate any in-flight request
+    rosterSeq++;
     writeStoredGameId(null);
+    writeStoredRoomCode(null);
     set(initialState);
   },
-}));
+  };
+});

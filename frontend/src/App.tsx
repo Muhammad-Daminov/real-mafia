@@ -4,6 +4,7 @@ import { useLobbyStore } from './store/lobbyStore';
 import { useGameStore } from './store/gameStore';
 import { bindTelegramTheme } from './telegram/theme';
 import { readStoredGameId } from './auth/gameIdStorage';
+import { readStoredRoomCode } from './auth/roomCodeStorage';
 import { connectSocket } from './socket/socketClient';
 import { uz } from './messages/uz';
 import DebugScreen from './screens/DebugScreen';
@@ -38,7 +39,16 @@ function App() {
   // init per gameId, not on every render.
   useEffect(() => {
     if (gameId && currentPhase && currentPhase !== 'LOBBY' && gameStoreGameId !== gameId) {
+      // `initFromGameId` resets gameStore to its initial state synchronously
+      // before its first `await` (see gameStore.ts) — `setRoomCode` runs
+      // right after, in the same tick, so it is never clobbered by that
+      // reset. F4.1: lobbyStore.code is already known at this point (set at
+      // room creation/join, well before game start).
       void useGameStore.getState().initFromGameId(gameId);
+      const code = useLobbyStore.getState().code;
+      if (code) {
+        useGameStore.getState().setRoomCode(code);
+      }
     }
   }, [gameId, currentPhase, gameStoreGameId]);
 
@@ -60,6 +70,17 @@ function App() {
       await useGameStore.getState().initFromGameId(stored);
       const s = useGameStore.getState();
       if (s.gameId === stored && !s.stateError) {
+        // F4.1/OD-F4-002: recover the roster's room code the same way —
+        // `auth/roomCodeStorage.ts`, written by `setRoomCode` at the same
+        // moment `gameId` was originally persisted. Absent only for a
+        // session whose `gameId` was persisted before this code shipped;
+        // `gameStore.roomCode` staying `null` is then the documented,
+        // honest fallback (NightScreen shows it plainly, no roster fetch
+        // is attempted).
+        const storedCode = readStoredRoomCode();
+        if (storedCode) {
+          useGameStore.getState().setRoomCode(storedCode);
+        }
         connectSocket(stored);
       }
     })();
