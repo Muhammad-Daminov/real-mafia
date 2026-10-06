@@ -278,7 +278,7 @@ device/browser/tab (no matching `sessionStorage` entry) has no backend
 "what's my active game" lookup to fall back to — this closes the reload
 case specifically, not every disconnection scenario.
 
-## OD-F4-001 — No endpoint exposes the alive-player roster (with display names) to a game member
+## OD-F4-001 — No endpoint exposes the alive-player roster (with display names) to a game member · RESOLVED (F4.1, backend 2395b4c)
 
 **Context.** F4 needs a NIGHT-phase target picker: alive players, with
 display names, for an acting role to choose from. Checked every candidate
@@ -335,6 +335,51 @@ shipped (commit `769618e`) for that roster's `isReady`/`isHost` fields.
 With that one field, the frontend could compute "alive, non-self,
 non-excluded-team" targets entirely client-side via
 `targetEligibility.ts`, no new endpoint required.
+
+**Resolution (F4.1).** Backend commit `2395b4c` (B-R3) shipped exactly the
+proposed addition: `RoomPlayerSummary.lifeStatus` (`WAITING`/`ALIVE`/
+`DEAD` — `LEFT` stays excluded by `ACTIVE_PLAYER_FILTER`, unchanged), no
+`roleCode`/`team`/`telegramId` added anywhere including for a `DEAD`
+player (OD-024 unchanged). `game/nightTargets.ts`'s `buildTargetRows` now
+wires `targetEligibility.ts`'s `evaluateTarget` to the real roster —
+`gameStore.roster`, refetched via `GET /rooms/:code` on game start, every
+`PHASE_CHANGED`, and every socket reconnect (same "no event replay on the
+backend" reasoning `refetchState` already follows). `NightScreen.tsx`
+renders the real alive-target list, teammates still sourced from
+`gameStore.teammates`. See OD-F4-002 immediately below for the one
+residual gap this surfaced (recovering the roster's room code after a
+reload) and its own resolution.
+
+## OD-F4-002 — Recovering the roster's room code after a reload
+
+**Context.** F4.1's roster read (`GET /rooms/:code`) is keyed by **room
+code**, not `gameId` — and there is still no `GET /rooms/by-game/:gameId`
+lookup to go from one to the other (confirmed absent, same check
+OD-F3-002 already made for the reverse direction). OD-F3-002 solved
+`gameId` recovery after a reload by persisting it to `sessionStorage`
+(`auth/gameIdStorage.ts`); `lobbyStore.code` itself is never persisted
+(same file, same reasoning) — so recovering `gameId` after a reload does
+**not** by itself recover the room code the roster needs.
+
+**Resolution.** `auth/roomCodeStorage.ts` persists the room code the same
+way (`sessionStorage`, same tradeoff). `gameStore.setRoomCode` writes it
+every time the code becomes known — the normal path (`App.tsx`, right
+after `initFromGameId`, reading `lobbyStore.code`) and the reload path
+(`App.tsx`'s existing OD-F3-002 recovery effect, reading
+`auth/roomCodeStorage.ts` right after `gameId` itself is recovered) both
+go through this one function, so there is exactly one place this is
+written. Cleared on `gameStore.reset()`, same lifecycle as `gameIdStorage.ts`.
+
+**Residual gap, by construction, not by oversight.** A session whose
+`gameId` was persisted to `sessionStorage` *before* this code shipped has
+no stored room code (that key never existed yet) — reloading such a
+session recovers role/phase state (`gameId` still resolves) but
+`gameStore.roomCode` stays `null`. `NightScreen.tsx` shows this plainly
+(`uz.night.rosterUnavailable`, a dedicated message distinct from "the
+roster is loading") rather than retrying forever or guessing a code. This
+is a one-time migration edge case — any session that starts fresh from
+this point on always has both written together — not treated as worth
+a backend addition for.
 
 ## Resolved gap (was open, fixed on the backend side): CORS
 
