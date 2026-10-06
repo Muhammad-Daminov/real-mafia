@@ -4,7 +4,9 @@ import { useGameStore } from '../store/gameStore';
 import { disconnectSocket } from '../socket/socketClient';
 import { phaseLabel, roleInfo } from '../game/labels';
 import { useCountdown } from '../game/useCountdown';
+import { nightResultMessage } from '../game/nightResultMessage';
 import RoleRevealScreen from './RoleRevealScreen';
+import NightScreen from './NightScreen';
 
 /**
  * F3: replaces the placeholder "Game started - phase: X" screen with the
@@ -22,6 +24,7 @@ function GameStartedScreen() {
   const myRoleCode = useGameStore((s) => s.myRoleCode);
   const roleRevealDismissed = useGameStore((s) => s.roleRevealDismissed);
   const stateError = useGameStore((s) => s.stateError);
+  const nightResult = useGameStore((s) => s.nightResult);
   const countdown = useCountdown(phaseEndsAt);
 
   const handleBackHome = () => {
@@ -32,6 +35,10 @@ function GameStartedScreen() {
 
   if (myRoleCode && !roleRevealDismissed) {
     return <RoleRevealScreen />;
+  }
+
+  if (phase === 'NIGHT') {
+    return <NightScreen />;
   }
 
   return (
@@ -46,6 +53,13 @@ function GameStartedScreen() {
         <p style={{ fontSize: 28, fontWeight: 700, margin: 0 }}>{countdown ?? uz.gameScreen.noDeadline}</p>
         {myRoleCode && <span className="mafia-badge">{uz.roleReveal.roleChip(roleInfo(myRoleCode).name)}</span>}
       </div>
+
+      {nightResult && (
+        <div className="mafia-card">
+          <p style={{ fontWeight: 600, margin: 0 }}>{uz.nightResults.title}</p>
+          <p className="mafia-hint" style={{ margin: 0 }}>{nightResultMessage(nightResult.event, nightResult.payload)}</p>
+        </div>
+      )}
 
       <button className="mafia-button mafia-button--secondary" onClick={handleBackHome}>
         {uz.started.backHome}

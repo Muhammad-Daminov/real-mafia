@@ -119,6 +119,33 @@ export const uz = {
     noDeadline: '—',
     stateError: 'O‘yin holatini yuklashda xatolik',
   },
+  night: {
+    title: 'Tun',
+    sleepingTitle: 'Siz uyquda',
+    sleepingNote: 'Sizning rolingiz bu kecha harakat qilmaydi. Kutib turing.',
+    watchingTitle: 'Siz halok bo‘lgansiz',
+    watchingNote: 'Siz endi tomoshabinsiz — o‘yin davom etayotganini kuzatib turasiz.',
+    targetListUnavailable:
+      'Nishon tanlash funksiyasi hozircha mavjud emas — bu haqida ishlab chiquvchilarga xabar berildi.',
+    submitted: 'Harakatingiz qabul qilindi.',
+  },
+  nightResults: {
+    title: 'Tungi natija',
+    DON_CHECK_RESULT: (isSheriff: boolean) =>
+      isSheriff ? 'Siz tekshirgan o‘yinchi — SHERIF.' : 'Siz tekshirgan o‘yinchi sherif emas.',
+    SHERIFF_RESULT: (died: boolean) =>
+      died ? 'O‘qingiz nishonga tegdi — u halok bo‘ldi.' : 'O‘qingiz nishonga tegmadi.',
+    GUARD_CONSUMED: (consumed: boolean) =>
+      consumed
+        ? 'Siz qo‘riqlagan o‘yinchiga hujum qilindi — siz o‘rniga halok bo‘ldingiz.'
+        : 'Bu kecha hech qanday hujum bo‘lmadi.',
+    DETECTIVE_RESULT: (flag: 'MAFIA' | 'NOT_MAFIA') =>
+      flag === 'MAFIA' ? 'Siz tekshirgan o‘yinchi — MAFIYA.' : 'Siz tekshirgan o‘yinchi mafiya emas.',
+    JOURNALIST_RESULT: (relation: 'SAME_TEAM' | 'DIFFERENT_TEAM') =>
+      relation === 'SAME_TEAM' ? 'Ikki o‘yinchi bir xil tomonda.' : 'Ikki o‘yinchi har xil tomonda.',
+    DOCTOR_PROTECT_RESULT: () => 'Himoyangiz bu kecha qo‘llanildi.',
+    unknown: 'Tungi natija olindi.',
+  },
   errors: {
     ROOM_NOT_FOUND: 'Xona topilmadi',
     HOST_ALREADY_HOSTING: 'Siz allaqachon boshqa xonani boshqaryapsiz',
@@ -131,6 +158,13 @@ export const uz = {
     TARGET_NOT_IN_GAME: 'Belgilangan o‘yinchi bu o‘yinda emas',
     NOT_ENOUGH_PLAYERS: 'O‘yinni boshlash uchun o‘yinchilar yetarli emas',
     CONFIG_INVALID: 'Konfiguratsiya xatosi',
+    GAME_NOT_FOUND: 'O‘yin topilmadi',
+    GAME_NOT_IN_NIGHT_PHASE: 'Hozir tungi harakat qilib bo‘lmaydi',
+    PLAYER_NOT_ALIVE: 'O‘lik o‘yinchi harakat qila olmaydi',
+    ROLE_HAS_NO_SUCH_ACTION: 'Rolingiz bu harakatni bajara olmaydi',
+    ABILITY_ALREADY_USED: 'Bu qobiliyat allaqachon ishlatilgan',
+    DOCTOR_REPEAT_PROTECTION: 'Ketma-ket ikki kecha bir xil o‘yinchini himoya qilib bo‘lmaydi',
+    INVALID_TARGET: 'Bu nishonni tanlab bo‘lmaydi',
     generic: 'Xatolik yuz berdi. Qaytadan urinib ko‘ring.',
     network: 'Tarmoq xatosi. Ulanishni tekshirib, qaytadan urinib ko‘ring.',
   },
