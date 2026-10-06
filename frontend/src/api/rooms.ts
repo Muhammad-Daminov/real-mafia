@@ -143,10 +143,20 @@ export type GamePhaseName =
   | 'GAME_OVER';
 
 /**
- * `RoomsService.RoomPlayerSummary` (backend commit 769618e, B-R1) — never
- * carries `telegramId` or any internal field. `avatarUrl` is nullable (we
- * only store what Telegram's `photo_url` gave us at login).
+ * `RoomsService.RoomPlayerSummary` (backend commit 769618e, B-R1; `lifeStatus`
+ * added by backend commit 2395b4c, B-R3) — never carries `telegramId`,
+ * `roleCode`, `team`, or any other internal field, including for a DEAD
+ * player (no role reveal on death, OD-024). `avatarUrl` is nullable (we only
+ * store what Telegram's `photo_url` gave us at login).
+ *
+ * `lifeStatus` is optional-tolerant: typed as the exact backend enum but
+ * marked optional so an older cached response shape (or any future value
+ * this frontend doesn't yet know about) doesn't break typing — every
+ * consumer must treat `undefined`/unrecognized as "not alive" (see
+ * `game/nightTargets.ts`'s `isAlivePlayer`), never silently "alive".
  */
+export type RoomPlayerLifeStatus = 'WAITING' | 'ALIVE' | 'DEAD' | 'LEFT';
+
 export interface RoomPlayerSummary {
   playerId: string;
   displayName: string;
@@ -154,6 +164,7 @@ export interface RoomPlayerSummary {
   isReady: boolean;
   isHost: boolean;
   joinedAt: string;
+  lifeStatus?: RoomPlayerLifeStatus;
 }
 
 export interface RoomSummary {
