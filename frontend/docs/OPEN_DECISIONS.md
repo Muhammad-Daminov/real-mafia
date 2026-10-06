@@ -278,6 +278,64 @@ device/browser/tab (no matching `sessionStorage` entry) has no backend
 "what's my active game" lookup to fall back to — this closes the reload
 case specifically, not every disconnection scenario.
 
+## OD-F4-001 — No endpoint exposes the alive-player roster (with display names) to a game member
+
+**Context.** F4 needs a NIGHT-phase target picker: alive players, with
+display names, for an acting role to choose from. Checked every candidate
+endpoint before building anything:
+
+- `GET /games/:gameId/state` (OD-059, `src/games/games.service.ts`) returns
+  only the caller's **own** `myPlayerId`/`myLifeStatus` — no roster of any
+  other player at all, alive or not.
+- `GET /rooms/:code` (OD-055, `RoomsService.getRoomByCode`) returns
+  `players: RoomPlayerSummary[]` — `{playerId, displayName, avatarUrl,
+  isReady, isHost, joinedAt}` — for every **non-LEFT** member
+  (`ACTIVE_PLAYER_FILTER = { not: LifeStatus.LEFT }`,
+  `src/rooms/rooms.service.ts`). That filter passes `WAITING`, `ALIVE`,
+  *and* `DEAD` players through identically — `RoomPlayerSummary` has no
+  `lifeStatus`/`alive` field at all, so a dead player is indistinguishable
+  from a living one in this response.
+- `GET /games/:gameId/night-actions/mine`
+  (`NightActionService.getMyActions`) is scoped to the caller's **own**
+  submitted actions only (§12.7's role-privacy rule) — no roster.
+- `GET /games/:gameId/votes` (`VoteService.getCurrentTally`) is a vote
+  tally, not a roster, and has the exact same gap for VOTING's own target
+  picker (out of this slice's scope, noted for whoever builds F5).
+- The dev-only `POST /dev/rooms/:code/fill-bots` returns `getRoomByCode`'s
+  same `RoomSummary` verbatim — same gap, not a workaround.
+- No realtime event (`PLAYER_JOINED`/`PLAYER_LEFT`/`PLAYER_READY_CHANGED`/
+  `HOST_TRANSFERRED`/`PHASE_CHANGED`/`GAME_FINISHED`/`MULTIPLE_DEATHS`/the
+  six private night-result events) carries a roster or a `lifeStatus`
+  field either — confirmed by reading every `broadcastToGame`/
+  `sendToPlayer` call site in `rooms.service.ts` and
+  `phase-transition.service.ts`.
+
+**Decision (per this task's own instruction): stop, don't invent a
+workaround.** `NightScreen.tsx` does not render a target picker. An alive
+role with a night action sees its role/ability reminder and teammates
+(already available from `gameStore`, OD-025) but a plain, honest message
+that target selection isn't available yet — never a silently-wrong roster
+(e.g. treating `GET /rooms/:code`'s non-LEFT list as "alive," which would
+let a player try to target someone already dead and get rejected with a
+confusing error, or worse, give false confidence a dead target is a valid
+choice). `game/targetEligibility.ts`'s `evaluateTarget`/`eligibleTargetIds`
+— a pure mirror of `NightActionService.validateTargets`'s three
+client-checkable rules (self-target, alive, team-exclusion) — is built and
+unit-tested against synthetic rosters, ready to wire in the moment a real
+roster source exists, but is not called from any screen in this slice.
+
+**Proposed minimal backend addition (not implemented — out of this
+slice's scope, "do not modify the backend").** Add a `lifeStatus:
+LifeStatus` field to `RoomPlayerSummary` (`GET /rooms/:code`'s response).
+The data is already loaded in the exact same query that already fetches
+the roster (`ACTIVE_PLAYER_FILTER` already reads `GamePlayer.lifeStatus`
+to build the `where` clause) — this is a projection-only change, the same
+class of addition OD-F2-001 already proposed and the backend already
+shipped (commit `769618e`) for that roster's `isReady`/`isHost` fields.
+With that one field, the frontend could compute "alive, non-self,
+non-excluded-team" targets entirely client-side via
+`targetEligibility.ts`, no new endpoint required.
+
 ## Resolved gap (was open, fixed on the backend side): CORS
 
 **Originally flagged here:** `src/main.ts` never called `app.enableCors()`,
