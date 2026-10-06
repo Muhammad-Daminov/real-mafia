@@ -1,8 +1,21 @@
 import { create } from 'zustand';
 import { ApiError } from '../api/client';
 import { getGameState, type GameStateResponse, type GameStateTeammate, type LifeStatus, type RoleCode, type Team } from '../api/games';
+import type { SubmittedNightAction } from '../api/nightActions';
 import type { GamePhaseName, GameStatus } from '../api/rooms';
 import { writeStoredGameId } from '../auth/gameIdStorage';
+import type { NightActionType } from '../game/nightAbility';
+
+export interface MySubmittedAction {
+  actionType: NightActionType;
+  targetPlayerId: string;
+  targetPlayerId2: string | null;
+}
+
+export interface NightResult {
+  event: string;
+  payload: Record<string, unknown>;
+}
 
 export interface GameState {
   gameId: string | null;
@@ -19,6 +32,19 @@ export interface GameState {
    * known; dismissing it flips this so the phase screen (with its "My
    * role" chip) takes over. Reset along with everything else on `reset()`. */
   roleRevealDismissed: boolean;
+  /** F4: this round's own submitted night action, from `POST
+   * /games/:gameId/night-actions`'s response — cleared on every phase
+   * change (a submission only makes sense within the one NIGHT occurrence
+   * that produced it; a new NIGHT round needs a fresh one). */
+  mySubmittedAction: MySubmittedAction | null;
+  /** F4/§17.5/OD-048: the private per-actor result delivered at the NIGHT ->
+   * NIGHT_RESOLUTION transition (DON_CHECK_RESULT/SHERIFF_RESULT/
+   * GUARD_CONSUMED/DETECTIVE_RESULT/JOURNALIST_RESULT/
+   * DOCTOR_PROTECT_RESULT — KILL has no result event). Persists through the
+   * following day phases so the next phase screen can show it; cleared only
+   * when a fresh NIGHT starts (not on every phase change, unlike
+   * `mySubmittedAction`). */
+  nightResult: NightResult | null;
   stateLoading: boolean;
   stateError: string | null;
 }
@@ -36,6 +62,8 @@ interface GameActions {
   refetchState: () => Promise<void>;
   applyRoleRevealed: (payload: { roleCode: RoleCode; team: Team; teammates: GameStateTeammate[] }) => void;
   applyPhaseChanged: (payload: { from: GamePhaseName; to: GamePhaseName; round: number }) => void;
+  applyActionSubmitted: (action: SubmittedNightAction) => void;
+  applyNightResult: (event: string, payload: Record<string, unknown>) => void;
   dismissRoleReveal: () => void;
   reset: () => void;
 }
@@ -52,6 +80,8 @@ const initialState: GameState = {
   myTeam: null,
   teammates: [],
   roleRevealDismissed: false,
+  mySubmittedAction: null,
+  nightResult: null,
   stateLoading: false,
   stateError: null,
 };
@@ -151,11 +181,34 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
   },
 
   applyPhaseChanged: (payload) => {
-    set({ phase: payload.to, round: payload.round });
+    set({
+      phase: payload.to,
+      round: payload.round,
+      // F4: a submission only applies within the one NIGHT occurrence that
+      // produced it — any phase change invalidates it. `nightResult`
+      // outlives the phase change that delivers it (shown through the
+      // following day phases) and is only cleared once a fresh NIGHT starts.
+      mySubmittedAction: null,
+      ...(payload.to === 'NIGHT' ? { nightResult: null } : {}),
+    });
     // PHASE_CHANGED carries no `phaseEndsAt` — refetch to learn the new
     // phase's deadline. Fire-and-forget; `refetchState` itself guards
     // against out-of-order responses.
     void get().refetchState();
+  },
+
+  applyActionSubmitted: (action) => {
+    set({
+      mySubmittedAction: {
+        actionType: action.actionType,
+        targetPlayerId: action.targetPlayerId,
+        targetPlayerId2: action.targetPlayerId2,
+      },
+    });
+  },
+
+  applyNightResult: (event, payload) => {
+    set({ nightResult: { event, payload } });
   },
 
   dismissRoleReveal: () => set({ roleRevealDismissed: true }),

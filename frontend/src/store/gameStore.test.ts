@@ -195,3 +195,80 @@ describe('gameStore — reset', () => {
     expect(s.roleRevealDismissed).toBe(false);
   });
 });
+
+describe('gameStore — applyActionSubmitted (F4)', () => {
+  it('sets mySubmittedAction from the POST /night-actions response', async () => {
+    const { useGameStore } = await import('./gameStore');
+    useGameStore.getState().applyActionSubmitted({
+      actionId: 'a1',
+      gameId: 'game-1',
+      phaseId: 'phase-1',
+      actionType: 'INVESTIGATE',
+      actionSlot: 0,
+      targetPlayerId: 'player-2',
+      targetPlayerId2: null,
+    });
+
+    expect(useGameStore.getState().mySubmittedAction).toEqual({
+      actionType: 'INVESTIGATE',
+      targetPlayerId: 'player-2',
+      targetPlayerId2: null,
+    });
+  });
+});
+
+describe('gameStore — applyNightResult (F4)', () => {
+  it('sets nightResult to the event name + payload', async () => {
+    const { useGameStore } = await import('./gameStore');
+    useGameStore.getState().applyNightResult('DETECTIVE_RESULT', { flag: 'MAFIA' });
+
+    expect(useGameStore.getState().nightResult).toEqual({
+      event: 'DETECTIVE_RESULT',
+      payload: { flag: 'MAFIA' },
+    });
+  });
+});
+
+describe('gameStore — applyPhaseChanged clears submission/result state (F4)', () => {
+  it('clears mySubmittedAction on every phase change', async () => {
+    const { useGameStore } = await import('./gameStore');
+    await useGameStore.getState().initFromGameId('game-1');
+    useGameStore.getState().applyActionSubmitted({
+      actionId: 'a1',
+      gameId: 'game-1',
+      phaseId: 'phase-1',
+      actionType: 'SHOOT',
+      actionSlot: 0,
+      targetPlayerId: 'player-2',
+      targetPlayerId2: null,
+    });
+    expect(useGameStore.getState().mySubmittedAction).not.toBeNull();
+
+    getGameStateMock.mockResolvedValue(makeSnapshot({ currentPhase: 'NIGHT_RESOLUTION', round: 1 }));
+    useGameStore.getState().applyPhaseChanged({ from: 'NIGHT', to: 'NIGHT_RESOLUTION', round: 1 });
+
+    expect(useGameStore.getState().mySubmittedAction).toBeNull();
+  });
+
+  it('keeps nightResult when leaving NIGHT (so the next phase screen can show it)', async () => {
+    const { useGameStore } = await import('./gameStore');
+    await useGameStore.getState().initFromGameId('game-1');
+    useGameStore.getState().applyNightResult('SHERIFF_RESULT', { died: true });
+
+    getGameStateMock.mockResolvedValue(makeSnapshot({ currentPhase: 'NIGHT_RESOLUTION', round: 1 }));
+    useGameStore.getState().applyPhaseChanged({ from: 'NIGHT', to: 'NIGHT_RESOLUTION', round: 1 });
+
+    expect(useGameStore.getState().nightResult).toEqual({ event: 'SHERIFF_RESULT', payload: { died: true } });
+  });
+
+  it('clears nightResult once a fresh NIGHT starts', async () => {
+    const { useGameStore } = await import('./gameStore');
+    await useGameStore.getState().initFromGameId('game-1');
+    useGameStore.getState().applyNightResult('SHERIFF_RESULT', { died: true });
+
+    getGameStateMock.mockResolvedValue(makeSnapshot({ currentPhase: 'NIGHT', round: 2 }));
+    useGameStore.getState().applyPhaseChanged({ from: 'DISCUSSION', to: 'NIGHT', round: 2 });
+
+    expect(useGameStore.getState().nightResult).toBeNull();
+  });
+});

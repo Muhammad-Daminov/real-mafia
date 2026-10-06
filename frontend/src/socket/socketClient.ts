@@ -8,6 +8,18 @@ import { useGameStore } from '../store/gameStore';
 import type { GamePhaseName, HostTransferred, JoinedRoom, LeftRoom, ReadySet } from '../api/rooms';
 import type { GameStateTeammate, RoleCode, Team } from '../api/games';
 
+/** §17.5/OD-048: the six private night-action-result events — see
+ * `src/game-engine/night-actions/private-event-names.ts`. KILL has no
+ * result event (OD-048), so it's deliberately absent here. */
+const NIGHT_RESULT_EVENTS = new Set([
+  'DON_CHECK_RESULT',
+  'SHERIFF_RESULT',
+  'GUARD_CONSUMED',
+  'DETECTIVE_RESULT',
+  'JOURNALIST_RESULT',
+  'DOCTOR_PROTECT_RESULT',
+]);
+
 /**
  * Cap on socket.io-client's built-in reconnection attempts (default:
  * `Infinity`) — a debug tool retrying forever with a permanently-bad
@@ -148,6 +160,9 @@ function applyLobbyEvent(eventName: string, payload: unknown): void {
         .applyRoleRevealed(payload as { roleCode: RoleCode; team: Team; teammates: GameStateTeammate[] });
       break;
     default:
+      if (NIGHT_RESULT_EVENTS.has(eventName)) {
+        useGameStore.getState().applyNightResult(eventName, payload as Record<string, unknown>);
+      }
       break;
   }
 }
