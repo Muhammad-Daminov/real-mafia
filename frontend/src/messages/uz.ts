@@ -125,9 +125,20 @@ export const uz = {
     sleepingNote: 'Sizning rolingiz bu kecha harakat qilmaydi. Kutib turing.',
     watchingTitle: 'Siz halok bo‘lgansiz',
     watchingNote: 'Siz endi tomoshabinsiz — o‘yin davom etayotganini kuzatib turasiz.',
-    targetListUnavailable:
-      'Nishon tanlash funksiyasi hozircha mavjud emas — bu haqida ishlab chiquvchilarga xabar berildi.',
+    targetsTitle: 'Nishonni tanlang',
+    pairTargetHint: 'Ikkita o‘yinchini tanlang',
+    youMarker: '(Siz)',
+    reasonSelf: 'o‘zingiz',
+    reasonDead: 'halok bo‘lgan',
+    reasonExcludedTeam: 'jamoangiz a’zosi',
+    confirmButton: 'Tasdiqlash',
+    resubmitButton: 'Qayta yuborish',
+    submitting: 'Yuborilmoqda…',
     submitted: 'Harakatingiz qabul qilindi.',
+    rosterLoading: 'O‘yinchilar ro‘yxati yuklanmoqda…',
+    rosterError: 'Ro‘yxatni yuklashda xatolik',
+    rosterUnavailable:
+      'Nishonlar ro‘yxatini yuklab bo‘lmadi. Iltimos, ilovani yopib botdan qayta oching.',
   },
   nightResults: {
     title: 'Tungi natija',
