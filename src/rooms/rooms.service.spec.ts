@@ -1,11 +1,14 @@
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
-import { RoomVisibility, RulesetMode } from '@prisma/client';
+import { ActionType, RoleCode, RoomVisibility, RulesetMode } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CommandRequestService } from '../common/command-requests/command-request.service';
 import { SchedulerService } from '../common/scheduling/scheduler.service';
 import { RoleAssignmentService } from '../game-engine/role-assignment.service';
 import { GameLifecycleService } from '../game-engine/game-lifecycle.service';
+import { PhaseTransitionService } from '../game-engine/phase-transition.service';
+import { NightResolutionService } from '../game-engine/night-actions/night-resolution.service';
+import { VoteResolutionService } from '../game-engine/voting/vote-resolution.service';
 import { teamForRole } from '../game-engine/roles';
 import { RoomsService } from './rooms.service';
 import { RoomErrorCode, RoomException } from './rooms.errors';
@@ -31,6 +34,21 @@ describe('RoomsService (integration)', () => {
     prisma,
     commandRequests,
     gameLifecycle,
+    realtime as unknown as RealtimeEventService,
+  );
+  // B-R3: drives the real NIGHT -> NIGHT_RESOLUTION death-application path
+  // (NightResolutionService -> GameLifecycleService's ALIVE -> DEAD write)
+  // on top of a game actually started through RoomsService.startGame —
+  // same wiring as phase-transition.service.spec.ts, reusing this file's
+  // own `gameLifecycle`/`scheduler`/`realtime` instances.
+  const nightResolution = new NightResolutionService(gameLifecycle);
+  const voteResolution = new VoteResolutionService(gameLifecycle);
+  const phaseTransition = new PhaseTransitionService(
+    prisma,
+    gameLifecycle,
+    scheduler,
+    nightResolution,
+    voteResolution,
     realtime as unknown as RealtimeEventService,
   );
 
@@ -81,6 +99,9 @@ describe('RoomsService (integration)', () => {
           where: { dedupeKey: { in: games.map((g) => `phase-advance:${g.id}`) } },
         });
       }
+      await prisma.gameAction.deleteMany({
+        where: { gameId: { in: games.map((g) => g.id) } },
+      });
       await prisma.gameRoleAssignment.deleteMany({
         where: { game: { roomId: { in: createdRoomIds } } },
       });
@@ -441,6 +462,171 @@ describe('RoomsService (integration)', () => {
 
         expect(JSON.stringify(summary)).not.toContain(host.telegramId);
         expect(JSON.stringify(summary)).not.toContain('telegramId');
+      });
+    });
+
+    /**
+     * B-R3 (frontend OD-F4-001): exposes `lifeStatus` on `RoomPlayerSummary`
+     * so the frontend can build night/vote target lists. `WAITING -> ALIVE`
+     * and the real death-application path (`NightResolutionService` ->
+     * `GameLifecycleService`'s `ALIVE -> DEAD` write) are both driven through
+     * the actual service calls, not asserted by faking a `lifeStatus` value
+     * directly in the DB.
+     */
+    describe('players roster lifeStatus (B-R3)', () => {
+      /** Forces a timed phase to be due, bypassing a real wall-clock wait. */
+      const forcePhaseDue = async (gameId: string) => {
+        const active = await prisma.gamePhase.findFirstOrThrow({ where: { gameId, endedAt: null } });
+        await prisma.gamePhase.update({ where: { id: active.id }, data: { endsAt: new Date(Date.now() - 1_000) } });
+        return active;
+      };
+
+      it('is WAITING in LOBBY and ALIVE for every seated player once the real game has started', async () => {
+        const host = await makeUser();
+        const room = await createValidRoom(host.id, { maxPlayers: 4 });
+
+        const beforeStart = await service.getRoomByCode(room.code, host.id);
+        expect(beforeStart.players).toEqual([expect.objectContaining({ lifeStatus: 'WAITING' })]);
+
+        const second = await makeUser();
+        await service.joinRoom({ userId: second.id, code: room.code, clientRequestId: randomUUID() });
+        const third = await makeUser();
+        await service.joinRoom({ userId: third.id, code: room.code, clientRequestId: randomUUID() });
+        const bot = await prisma.user.create({
+          data: { telegramId: `${TEST_TELEGRAM_PREFIX}bot-${randomUUID()}`, firstName: 'Bot', isBot: true },
+        });
+        createdUserIds.push(bot.id);
+        await service.joinRoom({ userId: bot.id, code: room.code, clientRequestId: randomUUID() });
+
+        await service.startGame({ userId: host.id, roomId: room.roomId, clientRequestId: randomUUID() });
+
+        const afterStart = await service.getRoomByCode(room.code, host.id);
+        expect(afterStart.players).toHaveLength(4);
+        for (const player of afterStart.players!) {
+          expect(player.lifeStatus).toBe('ALIVE');
+        }
+        // The bot is seated identically to a real player — same field, same value.
+        expect(afterStart.players!.some((p) => p.displayName === 'Bot')).toBe(true);
+      });
+
+      it('flips to DEAD for the actual night-kill target via the real resolution path, others stay ALIVE', async () => {
+        const host = await makeUser();
+        const room = await createValidRoom(host.id, { maxPlayers: 4 });
+        const second = await makeUser();
+        await service.joinRoom({ userId: second.id, code: room.code, clientRequestId: randomUUID() });
+        const third = await makeUser();
+        await service.joinRoom({ userId: third.id, code: room.code, clientRequestId: randomUUID() });
+        const fourth = await makeUser();
+        await service.joinRoom({ userId: fourth.id, code: room.code, clientRequestId: randomUUID() });
+
+        const started = await service.startGame({ userId: host.id, roomId: room.roomId, clientRequestId: randomUUID() });
+
+        // ROLE_REVEAL -> NIGHT (round 0 -> 1, OD-042).
+        await forcePhaseDue(started.gameId);
+        const toNight = await phaseTransition.advancePhase(started.gameId);
+        expect(toNight).toMatchObject({ advanced: true, to: 'NIGHT' });
+
+        const assignments = await prisma.gameRoleAssignment.findMany({ where: { gameId: started.gameId } });
+        const mafia = assignments.find((a) => a.roleCode === RoleCode.MAFIA)!;
+        const civilian = assignments.find((a) => a.roleCode === RoleCode.CIVILIAN)!;
+        const untouchedCivilian = assignments.find(
+          (a) => a.roleCode === RoleCode.CIVILIAN && a.playerId !== civilian.playerId,
+        );
+
+        const nightPhase = await prisma.gamePhase.findFirstOrThrow({
+          where: { gameId: started.gameId, endedAt: null },
+        });
+        await prisma.gameAction.create({
+          data: {
+            gameId: started.gameId,
+            phaseId: nightPhase.id,
+            actorPlayerId: mafia.playerId,
+            actionType: ActionType.KILL,
+            actionSlot: 0,
+            targetPlayerId: civilian.playerId,
+          },
+        });
+
+        // NIGHT (due) -> NIGHT_RESOLUTION (applies the death) -> LAST_WORD
+        // (deathsOccurred routes here, not MORNING, per the phase graph).
+        await forcePhaseDue(started.gameId);
+        const toLastWord = await phaseTransition.advancePhase(started.gameId);
+        expect(toLastWord).toMatchObject({ advanced: true, to: 'LAST_WORD' });
+
+        const summary = await service.getRoomByCode(room.code, host.id);
+        const killedEntry = summary.players!.find((p) => p.playerId === civilian.playerId)!;
+        const mafiaEntry = summary.players!.find((p) => p.playerId === mafia.playerId)!;
+        expect(killedEntry.lifeStatus).toBe('DEAD');
+        expect(mafiaEntry.lifeStatus).toBe('ALIVE');
+        if (untouchedCivilian) {
+          const untouchedEntry = summary.players!.find((p) => p.playerId === untouchedCivilian.playerId)!;
+          expect(untouchedEntry.lifeStatus).toBe('ALIVE');
+        }
+
+        const json = JSON.stringify(summary);
+        expect(json).not.toContain('roleCode');
+        expect(json).not.toContain('team');
+        expect(json).not.toContain('telegramId');
+        expect(json).not.toContain(RoleCode.MAFIA);
+        expect(json).not.toContain(RoleCode.CIVILIAN);
+      });
+
+      it('never exposes roleCode/team/telegramId for a DEAD player either (no role reveal on death, OD-024)', async () => {
+        const host = await makeUser();
+        const room = await createValidRoom(host.id, { maxPlayers: 4 });
+        const second = await makeUser();
+        await service.joinRoom({ userId: second.id, code: room.code, clientRequestId: randomUUID() });
+        const third = await makeUser();
+        await service.joinRoom({ userId: third.id, code: room.code, clientRequestId: randomUUID() });
+        const fourth = await makeUser();
+        await service.joinRoom({ userId: fourth.id, code: room.code, clientRequestId: randomUUID() });
+
+        const started = await service.startGame({ userId: host.id, roomId: room.roomId, clientRequestId: randomUUID() });
+        await forcePhaseDue(started.gameId);
+        await phaseTransition.advancePhase(started.gameId);
+
+        const assignments = await prisma.gameRoleAssignment.findMany({ where: { gameId: started.gameId } });
+        const mafia = assignments.find((a) => a.roleCode === RoleCode.MAFIA)!;
+        const target = assignments.find((a) => a.playerId !== mafia.playerId)!;
+        const nightPhase = await prisma.gamePhase.findFirstOrThrow({
+          where: { gameId: started.gameId, endedAt: null },
+        });
+        await prisma.gameAction.create({
+          data: {
+            gameId: started.gameId,
+            phaseId: nightPhase.id,
+            actorPlayerId: mafia.playerId,
+            actionType: ActionType.KILL,
+            actionSlot: 0,
+            targetPlayerId: target.playerId,
+          },
+        });
+        await forcePhaseDue(started.gameId);
+        await phaseTransition.advancePhase(started.gameId);
+
+        const summary = await service.getRoomByCode(room.code, host.id);
+        const deadEntry = summary.players!.find((p) => p.playerId === target.playerId)!;
+        expect(deadEntry.lifeStatus).toBe('DEAD');
+        expect(Object.keys(deadEntry).sort()).toEqual(
+          ['avatarUrl', 'displayName', 'isHost', 'isReady', 'joinedAt', 'lifeStatus', 'playerId'].sort(),
+        );
+      });
+
+      it('omits `players` for a non-member even once the game is RUNNING with a DEAD player', async () => {
+        const host = await makeUser();
+        const outsider = await makeUser();
+        const room = await createValidRoom(host.id, { maxPlayers: 4 });
+        const second = await makeUser();
+        await service.joinRoom({ userId: second.id, code: room.code, clientRequestId: randomUUID() });
+        const third = await makeUser();
+        await service.joinRoom({ userId: third.id, code: room.code, clientRequestId: randomUUID() });
+        const fourth = await makeUser();
+        await service.joinRoom({ userId: fourth.id, code: room.code, clientRequestId: randomUUID() });
+        await service.startGame({ userId: host.id, roomId: room.roomId, clientRequestId: randomUUID() });
+
+        const summary = await service.getRoomByCode(room.code, outsider.id);
+
+        expect(summary.players).toBeUndefined();
       });
     });
   });

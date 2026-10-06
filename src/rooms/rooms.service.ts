@@ -83,15 +83,27 @@ export interface CreatedRoom {
 }
 
 /**
- * B-R1: never carries `telegramId`, roles, or any other internal field —
- * only what a fellow lobby member needs to render a roster. `displayName`
- * is derived from `User.firstName`/`lastName` (no separate stored display
- * name exists); `avatarUrl` is `User.avatar` verbatim (nullable — we only
- * store what Telegram's `photo_url` gave us at login, never fetch/generate
- * one). `joinedAt` is an ISO string, matching the `GameStarted.startedAt`
+ * B-R1/B-R3: never carries `telegramId`, roles, teams, or any other
+ * internal field — only what a fellow lobby/game member needs to render a
+ * roster and (B-R3) target lists. `displayName` is derived from `User.
+ * firstName`/`lastName` (no separate stored display name exists);
+ * `avatarUrl` is `User.avatar` verbatim (nullable — we only store what
+ * Telegram's `photo_url` gave us at login, never fetch/generate one).
+ * `joinedAt` is an ISO string, matching the `GameStarted.startedAt`
  * convention for the same reason (a `Date` would silently become a string
  * on the CommandRequest replay path but not on the first call — moot here
  * since this is a read, not a replay-recorded write, but kept consistent).
+ *
+ * `lifeStatus` (B-R3, frontend OD-F4-001): the exact `@prisma/client`
+ * `LifeStatus` enum value — `WAITING` pre-start, `ALIVE`/`DEAD` once
+ * `GameLifecycleService.startGame` flips every seated player to `ALIVE`
+ * (`LEFT` is excluded from this array entirely by `ACTIVE_PLAYER_FILTER`
+ * below, same as before this field existed). Public game information —
+ * every alive player already sees who died via `MULTIPLE_DEATHS`/the next
+ * day's visibly-shorter alive roster — but never a role reveal: this is
+ * the only new field, no `roleCode`/`team` is added here, including for a
+ * `DEAD` player (that stays this game's existing "no role reveal on death"
+ * behavior, OD-024, unchanged).
  */
 export interface RoomPlayerSummary {
   playerId: string;
@@ -100,6 +112,7 @@ export interface RoomPlayerSummary {
   isReady: boolean;
   isHost: boolean;
   joinedAt: string;
+  lifeStatus: LifeStatus;
 }
 
 export interface RoomSummary {
@@ -364,6 +377,7 @@ export class RoomsService {
         userId: true,
         isReady: true,
         joinedAt: true,
+        lifeStatus: true,
         user: { select: { firstName: true, lastName: true, avatar: true } },
       },
     });
@@ -393,6 +407,7 @@ export class RoomsService {
               isReady: p.isReady,
               isHost: p.id === game.hostPlayerId,
               joinedAt: p.joinedAt.toISOString(),
+              lifeStatus: p.lifeStatus,
             })),
           }
         : {}),
