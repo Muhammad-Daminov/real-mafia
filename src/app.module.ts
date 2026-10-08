@@ -6,6 +6,7 @@ import { RoomsModule } from './rooms/rooms.module';
 import { GameEngineModule } from './game-engine/game-engine.module';
 import { GamesModule } from './games/games.module';
 import { OutboxModule } from './common/outbox/outbox.module';
+import { HealthModule } from './health/health.module';
 import { resolveDevToolsImports } from './dev-tools/dev-tools.config';
 
 @Module({
@@ -23,6 +24,7 @@ import { resolveDevToolsImports } from './dev-tools/dev-tools.config';
     GameEngineModule,
     GamesModule,
     OutboxModule,
+    HealthModule,
     ...resolveDevToolsImports(),
   ],
 })

@@ -31,7 +31,12 @@ async function bootstrap() {
     }),
   );
 
-  await app.listen(process.env.PORT ?? 3000);
+  // Render (and most PaaS containers) only route traffic to a process
+  // listening on all interfaces — binding to the implicit default (which
+  // on some Node builds resolves to IPv6-only or localhost-only) can leave
+  // the platform's own health check unable to reach the port it just
+  // injected via PORT.
+  await app.listen(process.env.PORT ?? 3000, '0.0.0.0');
 }
 
 bootstrap();
