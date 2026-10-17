@@ -19,6 +19,15 @@ export type RoleCode =
 /** `game-engine/roles.ts`'s `Team` type, verbatim. */
 export type Team = 'TOWN' | 'MAFIA' | 'NEUTRAL';
 
+/** `prisma/schema.prisma`'s `WinnerTeam` enum, verbatim — the one extra
+ * value over `Team` (`DRAW`) is a real, distinct outcome (OD-018: a tie
+ * for the top vote spot leads to no execution, but `WinnerTeam` itself is
+ * only ever `DRAW` from `win-evaluator.ts`'s own win-condition logic, not
+ * from vote ties). Only ever seen in the `GAME_FINISHED` socket payload —
+ * no REST endpoint returns it (see frontend/docs/OPEN_DECISIONS.md
+ * OD-F5-001). */
+export type WinnerTeam = 'TOWN' | 'MAFIA' | 'NEUTRAL' | 'DRAW';
+
 /** `prisma/schema.prisma`'s `LifeStatus` enum, verbatim. */
 export type LifeStatus = 'WAITING' | 'ALIVE' | 'DEAD' | 'LEFT';
 
