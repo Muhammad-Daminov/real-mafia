@@ -16,7 +16,7 @@ describe('returnHome — end-screen state reset', () => {
       roomCode: 'ABCDEF',
       myRoleCode: 'DETECTIVE',
       roster: [{ playerId: 'p1', displayName: 'Me', avatarUrl: null, isReady: true, isHost: true, joinedAt: 't', lifeStatus: 'ALIVE' }],
-      gameResult: { winnerTeam: 'TOWN' },
+      gameResult: { winnerTeam: 'TOWN', finishedAt: '2026-01-01T00:20:00.000Z', players: [] },
     });
     useLobbyStore.setState({ roomId: 'room-1', code: 'ABCDEF' });
 

@@ -161,6 +161,7 @@ export const uz = {
     winnerLine: (teamName: string) => `G‘alaba: ${teamName}`,
     youWon: 'Siz g‘alaba qozondingiz!',
     youLost: 'Siz yutqazdingiz.',
+    rolesTitle: 'Rollar',
     backHome: 'Bosh sahifa',
   },
   nightResults: {

@@ -383,7 +383,28 @@ a backend addition for.
 
 ## OD-F5-001 — No REST endpoint returns the game result after GAME_FINISHED; no event names a single night death or a vote execution's target
 
-**Context.** F5 needed: (a) how a client learns the final result (winner,
+**Status (F5.1): the "result after GAME_FINISHED" half is RESOLVED by
+backend commit `95a2908`** — `GamesService.getMyState`
+(`GET /games/:gameId/state`) now returns an optional `result` field
+(`{winnerTeam, finishedAt, players: [{playerId, displayName, roleCode,
+team, lifeStatus}]}`), present only when `status === 'FINISHED'`, closing
+exactly the gap the "Proposed minimal backend addition" below called for
+(and going further — a full role reveal, not just `winnerTeam`).
+`gameStore.gameResult` (F5.1) now comes from EITHER this REST field OR the
+`GAME_FINISHED` socket event, REST always winning on disagreement; a
+reload/reconnect shows the full `GameEndScreen` result immediately via
+`initFromGameId`/`refetchState`, no more permanent
+`resultUnavailable` for a missed event. See `backend/docs/decisions/
+OPEN_DECISIONS.md` OD-061: the result payload does **not** carry
+`diedInRound`/`deathCause` per player — only `lifeStatus` (alive/dead) — so
+that remains an open gap; do not build "who died when/why" UI on this
+field, only on the roster-diff approach below, which is unaffected by
+this change. (See `../../docs/decisions/OPEN_DECISIONS.md` OD-061.) The
+"who died during play / vote execution target" half of this OD (the rest
+of this section) is still fully open — 95a2908 only covers the
+post-GAME_OVER reveal, not per-round death attribution.
+
+**Context (original, pre-95a2908).** F5 needed: (a) how a client learns the final result (winner,
 role reveal, stats) after a reload, and (b) how a client learns *who* died
 each night or was executed by a vote, for the morning announcement and the
 vote-result display. Checked every candidate before building anything:

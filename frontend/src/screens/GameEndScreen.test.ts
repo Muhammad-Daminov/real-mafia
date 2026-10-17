@@ -24,4 +24,24 @@ describe('resolvePersonalOutcome', () => {
   it('is null when myTeam itself is not known', () => {
     expect(resolvePersonalOutcome(null, 'TOWN')).toBeNull();
   });
+
+  it('covers every Team x WinnerTeam combination the backend defines (F5.1)', () => {
+    const teams = ['TOWN', 'MAFIA', 'NEUTRAL'] as const;
+    const winnerTeams = ['TOWN', 'MAFIA', 'NEUTRAL', 'DRAW'] as const;
+
+    for (const myTeam of teams) {
+      for (const winnerTeam of winnerTeams) {
+        const outcome = resolvePersonalOutcome(myTeam, winnerTeam);
+        if (winnerTeam === 'DRAW') {
+          expect(outcome).toBeNull();
+        } else {
+          expect(outcome).toBe(myTeam === winnerTeam);
+        }
+      }
+    }
+  });
+
+  it('F5.1: an unrecognized winnerTeam string never crashes and never guesses a win', () => {
+    expect(resolvePersonalOutcome('TOWN', 'SOME_FUTURE_TEAM' as never)).toBe(false);
+  });
 });

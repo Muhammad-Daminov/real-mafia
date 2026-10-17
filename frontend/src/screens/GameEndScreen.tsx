@@ -9,7 +9,9 @@ import type { Team, WinnerTeam } from '../api/games';
  * same convention as `NightScreen.tsx`'s `resolveNightScreenState`).
  * `null` means "no personal win/loss to show" — either the result isn't
  * known yet (OD-F5-001's reload gap) or the game ended in a `DRAW`, which
- * has no winning team to compare `myTeam` against.
+ * has no winning team to compare `myTeam` against. An unrecognized
+ * `winnerTeam` string also falls through to `false` via the `===`
+ * comparison below — never crashes, never guesses a result.
  */
 export function resolvePersonalOutcome(myTeam: Team | null, winnerTeam: WinnerTeam | null): boolean | null {
   if (!myTeam || !winnerTeam || winnerTeam === 'DRAW') return null;
@@ -17,19 +19,21 @@ export function resolvePersonalOutcome(myTeam: Team | null, winnerTeam: WinnerTe
 }
 
 /**
- * F5: GAME_OVER screen. `gameResult` (`gameStore.ts`) is set ONLY by the
- * `GAME_FINISHED` socket event (`{winnerTeam}`) — OD-F5-001: no REST
- * endpoint returns the game result to a member after the fact, so a
- * reload that missed the event shows `resultUnavailable` instead of a
- * guessed outcome. There is no role-reveal list here, by construction —
- * `GAME_FINISHED`'s payload has never carried one (confirmed by reading
- * `PhaseTransitionService.advancePhase`'s own broadcast call), not a
- * frontend choice to hide one that exists.
+ * F5/F5.1: GAME_OVER screen. `gameResult` (`gameStore.ts`) is populated via
+ * EITHER the `GAME_FINISHED` socket event (provisional — `winnerTeam` only)
+ * OR `GET /games/:gameId/state`'s `result` (authoritative — full role
+ * reveal, backend 95a2908/OD-F5-001 resolved) — REST always wins if the two
+ * disagree, see `gameStore.applyGameResult`. `gameResult.players` is `null`
+ * until REST resolves, so the role-reveal list below renders nothing until
+ * then (the banner/winner line can already show from the event alone).
+ * Does NOT show who died in which round or why — OD-061 found
+ * `diedInRound`/`deathCause` aren't derivable without a backend schema
+ * change; `lifeStatus` (alive/dead) is all that's available per player.
  */
 function GameEndScreen() {
   const gameResult = useGameStore((s) => s.gameResult);
   const myTeam = useGameStore((s) => s.myTeam);
-  const myRoleCode = useGameStore((s) => s.myRoleCode);
+  const myPlayerId = useGameStore((s) => s.myPlayerId);
 
   const didWin = resolvePersonalOutcome(myTeam, gameResult?.winnerTeam ?? null);
 
@@ -52,7 +56,21 @@ function GameEndScreen() {
         </div>
       )}
 
-      {myRoleCode && <p className="mafia-hint">{uz.roleReveal.roleChip(roleInfo(myRoleCode).name)}</p>}
+      {gameResult?.players && (
+        <div className="mafia-card">
+          <p style={{ fontWeight: 700, margin: 0 }}>{uz.gameEnd.rolesTitle}</p>
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+            {gameResult.players.map((p) => (
+              <li key={p.playerId}>
+                {p.displayName}
+                {p.playerId === myPlayerId ? ` ${uz.night.youMarker}` : ''}
+                {` — ${roleInfo(p.roleCode).name} (${teamLabel(p.team)})`}
+                {p.lifeStatus !== 'ALIVE' ? ` · ${uz.day.deadTag}` : ''}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <button className="mafia-button" onClick={returnHome}>
         {uz.gameEnd.backHome}
