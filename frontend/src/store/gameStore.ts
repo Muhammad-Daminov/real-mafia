@@ -1,16 +1,21 @@
 import { create } from 'zustand';
 import { ApiError } from '../api/client';
-import { getGameState, type GameStateResponse, type GameStateTeammate, type LifeStatus, type RoleCode, type Team } from '../api/games';
+import { getGameState, type GameStateResponse, type GameStateTeammate, type LifeStatus, type RoleCode, type Team, type WinnerTeam } from '../api/games';
 import type { SubmittedNightAction } from '../api/nightActions';
+import { getVoteTally, type CastVoteResponse, type VoteTallyEntry } from '../api/votes';
 import { getRoomByCode, type GamePhaseName, type GameStatus, type RoomPlayerSummary } from '../api/rooms';
 import { writeStoredGameId } from '../auth/gameIdStorage';
 import { writeStoredRoomCode } from '../auth/roomCodeStorage';
 import type { NightActionType } from '../game/nightAbility';
+import { computeDeathDiff, type DeathDiff } from '../game/deathDiff';
 
 /** Trailing debounce for roster refetches triggered in quick succession
  * (e.g. a socket reconnect landing right after a PHASE_CHANGED) — same
  * value/reasoning as `lobbyStore.ts`'s `REFETCH_DEBOUNCE_MS`. */
 const ROSTER_REFETCH_DEBOUNCE_MS = 150;
+/** Same debounce, separate timer — a vote tally refetch and a roster
+ * refetch are independent request pipelines (F5). */
+const VOTE_TALLY_REFETCH_DEBOUNCE_MS = 150;
 
 export interface MySubmittedAction {
   actionType: NightActionType;
@@ -63,6 +68,30 @@ export interface GameState {
   roster: RoomPlayerSummary[] | null;
   rosterLoading: boolean;
   rosterError: string | null;
+  /** F5: the `from` side of the most recent `PHASE_CHANGED` — read by
+   * `refetchRoster` to tag a freshly-computed `lastDeaths` diff with which
+   * transition produced it. Not meant to be read directly by a screen. */
+  lastPhaseFrom: GamePhaseName | null;
+  /** F5/OD-F5-001: who flipped alive -> not-alive since the previous
+   * roster snapshot, recomputed fresh on every `refetchRoster` call (never
+   * accumulated) — the only signal available for "who died," since no
+   * event names a single night death (`MULTIPLE_DEATHS` only fires for
+   * >1) or a vote execution's target at all. `null` once a refetch finds
+   * nothing new. */
+  lastDeaths: DeathDiff | null;
+  /** F5: this round's own submitted vote (`POST /games/:gameId/votes`'s
+   * response), cleared on every phase change — mirrors `mySubmittedAction`. */
+  myVote: string | null;
+  /** F5/OD-020(a): every current-round vote, refetched (debounced) on
+   * every `VOTE_CAST` broadcast and on entering/leaving `VOTING` — never
+   * patched in place from the event payload (same "refetch over patch"
+   * convention `lobbyStore.ts` already established for partial events). */
+  voteTally: VoteTallyEntry[] | null;
+  voteTallyError: string | null;
+  /** F5/OD-F5-001: set only from the `GAME_FINISHED` socket payload — no
+   * REST endpoint returns the game result to a member after the fact, so
+   * this stays `null` forever on a reload that missed the event. */
+  gameResult: { winnerTeam: WinnerTeam | null } | null;
   stateLoading: boolean;
   stateError: string | null;
 }
@@ -93,6 +122,18 @@ interface GameActions {
    * socket reconnect (no event replay on the backend, same reasoning as
    * `refetchState`). A no-op when `roomCode` isn't known yet. */
   refetchRoster: () => Promise<void>;
+  /** Sets `myVote` from a successful `POST /games/:gameId/votes` response. */
+  applyVoteSubmitted: (response: CastVoteResponse) => void;
+  /** `VOTE_CAST` socket handler — schedules a debounced tally refetch
+   * rather than patching from the event's own `{voterPlayerId,
+   * targetPlayerId}` payload (same "refetch over patch" reasoning
+   * `lobbyStore.ts` already applies to its own partial-payload events). */
+  applyVoteCast: () => void;
+  /** Re-fetches `GET /games/:gameId/votes` for the already-known `gameId`. */
+  refetchVoteTally: () => Promise<void>;
+  /** `GAME_FINISHED` socket handler — the only source of `gameResult`
+   * (OD-F5-001: no REST fallback exists). */
+  applyGameFinished: (winnerTeam: WinnerTeam | null) => void;
   dismissRoleReveal: () => void;
   reset: () => void;
 }
@@ -115,6 +156,12 @@ const initialState: GameState = {
   roster: null,
   rosterLoading: false,
   rosterError: null,
+  lastPhaseFrom: null,
+  lastDeaths: null,
+  myVote: null,
+  voteTally: null,
+  voteTallyError: null,
+  gameResult: null,
   stateLoading: false,
   stateError: null,
 };
@@ -157,6 +204,10 @@ function isNotAMember(error: unknown): boolean {
 let rosterSeq = 0;
 let rosterRefetchTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** Independent of `rosterSeq`/`stateSeq` — F5's own request pipeline. */
+let voteTallySeq = 0;
+let voteTallyRefetchTimer: ReturnType<typeof setTimeout> | null = null;
+
 export const useGameStore = create<GameState & GameActions>((set, get) => {
   function scheduleRosterRefetch(): void {
     if (rosterRefetchTimer) clearTimeout(rosterRefetchTimer);
@@ -164,6 +215,14 @@ export const useGameStore = create<GameState & GameActions>((set, get) => {
       rosterRefetchTimer = null;
       void get().refetchRoster();
     }, ROSTER_REFETCH_DEBOUNCE_MS);
+  }
+
+  function scheduleVoteTallyRefetch(): void {
+    if (voteTallyRefetchTimer) clearTimeout(voteTallyRefetchTimer);
+    voteTallyRefetchTimer = setTimeout(() => {
+      voteTallyRefetchTimer = null;
+      void get().refetchVoteTally();
+    }, VOTE_TALLY_REFETCH_DEBOUNCE_MS);
   }
 
   return {
@@ -239,6 +298,14 @@ export const useGameStore = create<GameState & GameActions>((set, get) => {
       // following day phases) and is only cleared once a fresh NIGHT starts.
       mySubmittedAction: null,
       ...(payload.to === 'NIGHT' ? { nightResult: null } : {}),
+      // F5: a vote only applies within the one VOTING occurrence that
+      // produced it, same reasoning as mySubmittedAction. The tally is
+      // refetched fresh below rather than carried forward.
+      myVote: null,
+      voteTally: null,
+      // `refetchRoster` reads this once it resolves, to tag a freshly
+      // computed `lastDeaths` diff with which transition produced it.
+      lastPhaseFrom: payload.from,
     });
     // PHASE_CHANGED carries no `phaseEndsAt` — refetch to learn the new
     // phase's deadline. Fire-and-forget; `refetchState` itself guards
@@ -246,8 +313,14 @@ export const useGameStore = create<GameState & GameActions>((set, get) => {
     void get().refetchState();
     // F4.1: a death may have just happened (NIGHT -> NIGHT_RESOLUTION) —
     // the roster's lifeStatus is stale until refetched. No-ops via
-    // `refetchRoster` itself if `roomCode` isn't known yet.
+    // `refetchRoster` itself if `roomCode` isn't known yet. F5: also the
+    // only way to learn who a vote executed (OD-F5-001) — same refetch
+    // serves both.
     scheduleRosterRefetch();
+    // F5: refetch the tally on every phase change — relevant on entering
+    // VOTING (fresh round) and harmless elsewhere (GET /games/:gameId/votes
+    // just returns the current, non-voting phase's empty vote list).
+    scheduleVoteTallyRefetch();
   },
 
   applyActionSubmitted: (action) => {
@@ -284,11 +357,48 @@ export const useGameStore = create<GameState & GameActions>((set, get) => {
       // `players` is omitted (not `[]`) for a non-member (OD-055) — by the
       // time this runs the caller is always an active game member, but
       // treat an absent roster as "not yet available" rather than crashing.
-      set({ roster: summary.players ?? null, rosterLoading: false });
+      const nextRoster = summary.players ?? null;
+      // F5/OD-F5-001: computed against the *previous* in-memory roster,
+      // before it's overwritten below — the only signal for "who died"
+      // this codebase has (no event names a single night death or a vote
+      // execution's target). Recomputed fresh every call, never
+      // accumulated — `null` once a later refetch finds nothing new.
+      const lastDeaths = computeDeathDiff(get().roster, nextRoster, get().lastPhaseFrom);
+      set({ roster: nextRoster, rosterLoading: false, lastDeaths });
     } catch (error) {
       if (seq !== rosterSeq) return;
       set({ rosterLoading: false, rosterError: error instanceof Error ? error.message : String(error) });
     }
+  },
+
+  applyVoteSubmitted: (response) => {
+    set({ myVote: response.targetPlayerId });
+  },
+
+  applyVoteCast: () => {
+    scheduleVoteTallyRefetch();
+  },
+
+  refetchVoteTally: async () => {
+    const gameId = get().gameId;
+    if (!gameId) return;
+
+    const seq = ++voteTallySeq;
+    set({ voteTallyError: null });
+
+    try {
+      const tally = await getVoteTally(gameId);
+      if (seq !== voteTallySeq) return; // superseded
+
+      set({ voteTally: tally });
+    } catch (error) {
+      if (seq !== voteTallySeq) return;
+      set({ voteTallyError: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  applyGameFinished: (winnerTeam) => {
+    set({ gameResult: { winnerTeam } });
   },
 
   dismissRoleReveal: () => set({ roleRevealDismissed: true }),
@@ -296,6 +406,7 @@ export const useGameStore = create<GameState & GameActions>((set, get) => {
   reset: () => {
     stateSeq++; // invalidate any in-flight request
     rosterSeq++;
+    voteTallySeq++;
     writeStoredGameId(null);
     writeStoredRoomCode(null);
     set(initialState);

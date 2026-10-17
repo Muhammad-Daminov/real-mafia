@@ -6,7 +6,7 @@ import { useSocketStore } from '../store/socketStore';
 import { useLobbyStore } from '../store/lobbyStore';
 import { useGameStore } from '../store/gameStore';
 import type { GamePhaseName, HostTransferred, JoinedRoom, LeftRoom, ReadySet } from '../api/rooms';
-import type { GameStateTeammate, RoleCode, Team } from '../api/games';
+import type { GameStateTeammate, RoleCode, Team, WinnerTeam } from '../api/games';
 
 /** §17.5/OD-048: the six private night-action-result events — see
  * `src/game-engine/night-actions/private-event-names.ts`. KILL has no
@@ -83,6 +83,13 @@ export function connectSocket(gameId: string): void {
     // also be stale after a missed event (a death during the drop).
     if (useGameStore.getState().roomCode) {
       void useGameStore.getState().refetchRoster();
+    }
+
+    // F5: a VOTE_CAST may have been missed during the drop — only
+    // meaningful during VOTING, but GET /games/:gameId/votes is harmless
+    // to call otherwise (just returns the current phase's empty list).
+    if (useGameStore.getState().phase === 'VOTING' && useGameStore.getState().gameId) {
+      void useGameStore.getState().refetchVoteTally();
     }
   });
 
@@ -164,6 +171,12 @@ function applyLobbyEvent(eventName: string, payload: unknown): void {
       useGameStore
         .getState()
         .applyRoleRevealed(payload as { roleCode: RoleCode; team: Team; teammates: GameStateTeammate[] });
+      break;
+    case 'VOTE_CAST':
+      useGameStore.getState().applyVoteCast();
+      break;
+    case 'GAME_FINISHED':
+      useGameStore.getState().applyGameFinished((payload as { winnerTeam: WinnerTeam | null }).winnerTeam);
       break;
     default:
       if (NIGHT_RESULT_EVENTS.has(eventName)) {
