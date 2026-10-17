@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { GamePhaseName, GameStatus, LifeStatus, RoleCode } from '@prisma/client';
+import { GamePhaseName, GameStatus, LifeStatus, RoleCode, WinnerTeam } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { Team, teamForRole } from '../game-engine/roles';
 import { GameStateErrorCode, GameStateException } from './game-state.errors';
@@ -7,6 +7,31 @@ import { GameStateErrorCode, GameStateException } from './game-state.errors';
 export interface GameStateTeammate {
   playerId: string;
   roleCode: RoleCode;
+}
+
+/**
+ * B-R4 (frontend OD-F5-001): a full role reveal — every seated player's
+ * `roleCode`/`team`, not just the caller's own — is only ever safe to
+ * return once the game has actually ended; §12.7's role-privacy rule is
+ * about *mid-game* information, and there is nothing left to protect once
+ * `GAME_OVER` is reached. `displayName` mirrors `RoomsService.
+ * getRoomByCode`'s exact derivation (`User.firstName`/`lastName`, no
+ * separate stored display name exists).
+ */
+export interface GameResultPlayer {
+  playerId: string;
+  displayName: string;
+  roleCode: RoleCode;
+  team: Team;
+  lifeStatus: LifeStatus;
+}
+
+export interface GameResultPayload {
+  winnerTeam: WinnerTeam;
+  /** ISO string — `Game.finishedAt`, set in the same write as the
+   * `GameResult` row (`GameLifecycleService.transitionPhase`). */
+  finishedAt: string;
+  players: GameResultPlayer[];
 }
 
 /**
@@ -41,6 +66,10 @@ export interface GameStateResponse {
    * had over the socket. Always `[]` for every non-mafia player.
    */
   teammates: GameStateTeammate[];
+  /** B-R4/OD-F5-001: present ONLY when `status === 'FINISHED'` — the full
+   * role reveal + winner. `undefined` (not sent at all) while the game is
+   * still `RUNNING` or hasn't started, never a half-filled placeholder. */
+  result?: GameResultPayload;
 }
 
 @Injectable()
@@ -67,7 +96,7 @@ export class GamesService {
 
     const game = await this.prisma.game.findUniqueOrThrow({
       where: { id: input.gameId },
-      select: { status: true, currentPhase: true, round: true },
+      select: { status: true, currentPhase: true, round: true, finishedAt: true },
     });
 
     const activePhase = await this.prisma.gamePhase.findFirst({
@@ -92,6 +121,9 @@ export class GamesService {
           )
         : [];
 
+    const result =
+      game.status === GameStatus.FINISHED ? await this.loadGameResult(input.gameId, game.finishedAt) : undefined;
+
     return {
       gameId: input.gameId,
       status: game.status,
@@ -103,6 +135,51 @@ export class GamesService {
       myRoleCode,
       myTeam,
       teammates,
+      ...(result ? { result } : {}),
+    };
+  }
+
+  /**
+   * B-R4: only ever called once `game.status === 'FINISHED'` — at that
+   * point `GameLifecycleService.transitionPhase` has already written both
+   * `Game.finishedAt` and the `GameResult` row in the same transaction
+   * (§16.3 invariant: `GAME_OVER` never commits without a `winnerTeam`),
+   * so `findUniqueOrThrow`/a non-null `finishedAt` are both safe
+   * invariants here, not defensive guesses. Every seated player's role is
+   * revealed — there is nothing left to protect once the game has ended.
+   */
+  private async loadGameResult(gameId: string, finishedAt: Date | null): Promise<GameResultPayload> {
+    if (!finishedAt) {
+      throw new Error(
+        `GamesService.loadGameResult: game ${gameId} is FINISHED with no finishedAt (§10.3/transitionPhase invariant violated)`,
+      );
+    }
+
+    const gameResult = await this.prisma.gameResult.findUniqueOrThrow({
+      where: { gameId },
+      select: { winnerTeam: true },
+    });
+
+    const players = await this.prisma.gamePlayer.findMany({
+      where: { gameId, roleAssignment: { isNot: null } },
+      select: {
+        id: true,
+        lifeStatus: true,
+        user: { select: { firstName: true, lastName: true } },
+        roleAssignment: { select: { roleCode: true } },
+      },
+    });
+
+    return {
+      winnerTeam: gameResult.winnerTeam,
+      finishedAt: finishedAt.toISOString(),
+      players: players.map((p) => ({
+        playerId: p.id,
+        displayName: p.user.lastName ? `${p.user.firstName} ${p.user.lastName}` : p.user.firstName,
+        roleCode: p.roleAssignment!.roleCode,
+        team: teamForRole(p.roleAssignment!.roleCode),
+        lifeStatus: p.lifeStatus,
+      })),
     };
   }
 }

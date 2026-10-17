@@ -1388,6 +1388,63 @@ and `depcruise` still reports zero violations.
 This is a dev-tooling addition, not a Master TZ gameplay behavior — no §
 section to fold it into.
 
+### OD-061 — `diedInRound`/`deathCause` Are Not Derivable Without a Schema Change · OPEN (not blocking — simply not built)
+Context: B-R4 (frontend OD-F5-001) asked for per-player `diedInRound` and
+`deathCause` (`'NIGHT' | 'VOTE' | null`) on `GET /games/:gameId/state`,
+"ONLY if that data already exists or is trivially derivable from existing
+tables... If it is not derivable without a schema change, STOP and
+describe the minimal change instead of guessing." Checked before
+building anything:
+
+- `GamePlayer.lifeStatus` (`prisma/schema.prisma`) is a plain enum column
+  with no companion timestamp, round, or cause field, and no `updatedAt`
+  either — the `ALIVE -> DEAD` write
+  (`GameLifecycleService.applyDeaths`, the one shared method both
+  `NightResolutionService` and `VoteResolutionService` call) records
+  nothing beyond the flag flip itself.
+- `GameAction.result` (populated by `NightResolutionService` at
+  `NIGHT_RESOLUTION`) is the *private per-actor* result (§17.5/OD-048 —
+  e.g. a Sheriff's `{died: true}` for their own shot) — `KILL` actions
+  themselves never get a `result` at all (confirmed:
+  `PRIVATE_RESULT_EVENT_BY_ACTION_TYPE` has no `KILL` entry, and
+  `resolveNightActions` never pushes one for it). There is no row
+  anywhere recording "this `GameAction` is why player X died."
+  `GameVote` has no outcome/result field at all, only the raw ballots.
+- A `VOTING` round's execution target *is* trivially re-derivable on its
+  own — `resolveVotes` (`vote-resolution.ts`) is a pure function of only
+  that round's `GameVote` rows, no cross-round state needed. A `NIGHT`
+  round's death set is **not** equally trivial: `resolveNightActions`
+  (§12.4's 9-step priority order) needs the *alive roster at the start of
+  that specific night*, which for any round after the first requires
+  already knowing every earlier round's outcome — i.e. a correct answer
+  requires replaying the game's entire night/vote history in chronological
+  order (doctor protection, bodyguard swap-in-place, maniac/mafia
+  overlap), not a single join or filter. Implementing that replay engine
+  as a read path would duplicate `NightResolutionService`'s own resolution
+  logic a second time, in a different module, with a real risk of the two
+  silently diverging — exactly the kind of guess this task's own
+  instruction says not to make.
+
+**Decision: stop, do not build, do not guess.** `GET /games/:gameId/state`
+ships B-R4's `result.players[].lifeStatus` (already derivable, see the
+commit this OD ships with) but no `diedInRound`/`deathCause` field on
+either the live roster or the `result` payload. Not blocking — the
+frontend's existing `game/deathDiff.ts` roster-diff workaround (OD-F5-001)
+remains the fallback.
+
+**Proposed minimal schema change (not implemented — out of this slice's
+scope).** Add two nullable columns to `GamePlayer`: `diedInRound Int?`
+and `deathCause DeathCause?` (new two-value enum, `NIGHT | VOTE`), written
+by `GameLifecycleService.applyDeaths` at the exact moment it flips
+`lifeStatus` to `DEAD` — both call sites
+(`NightResolutionService.resolveRound`/`VoteResolutionService.resolveRound`)
+already know the round and which kind of resolution they are, so no new
+lookup is needed, only two extra fields on an `updateMany` call that
+already runs. This is the same class of addition as OD-F2-001/OD-F4-001's
+already-shipped precedents (B-R1's `isReady`/`isHost`, B-R3's
+`lifeStatus`) — a projection-only read benefits from a write-time column,
+not a read-time replay.
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
 None. Every previously blocking decision is resolved (see the addendum above).
@@ -1406,6 +1463,7 @@ None. Every previously blocking decision is resolved (see the addendum above).
 | OD-032 | Staff authentication mechanism | Phase 16: Admin | Local credentials + IP allowlist |
 | OD-033 | Financial-record retention jurisdiction | Release gate | — |
 | OD-034 | Wallet negative-balance handling after refund | Phase: Payments | Clamp display at 0, flag ledger deficit for admin review (§25.5) |
+| OD-061 | `diedInRound`/`deathCause` on `GamePlayer` | Any slice needing them server-side | Not built — frontend's roster-diff workaround (OD-F5-001) stands in |
 
 ## Notes
 
@@ -1418,4 +1476,4 @@ None. Every previously blocking decision is resolved (see the addendum above).
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
 - Total: 50 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
   OD-037 through OD-060 recorded 2026-09-26/27/28/2026-10-05/2026-10-17), 0 open+blocking,
-  10 open+non-blocking (60 IDs, OD-001 through OD-060).
+  11 open+non-blocking (61 IDs, OD-001 through OD-061).

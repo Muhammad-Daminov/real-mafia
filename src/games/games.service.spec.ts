@@ -1,11 +1,16 @@
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
-import { RulesetMode } from '@prisma/client';
+import { ActionType, RoleCode, RulesetMode } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CommandRequestService } from '../common/command-requests/command-request.service';
 import { SchedulerService } from '../common/scheduling/scheduler.service';
 import { RoleAssignmentService } from '../game-engine/role-assignment.service';
 import { GameLifecycleService } from '../game-engine/game-lifecycle.service';
+import { PhaseTransitionService } from '../game-engine/phase-transition.service';
+import { NightResolutionService } from '../game-engine/night-actions/night-resolution.service';
+import { NightActionService } from '../game-engine/night-actions/night-action.service';
+import { VoteResolutionService } from '../game-engine/voting/vote-resolution.service';
+import { VoteService } from '../game-engine/voting/vote.service';
 import { teamForRole } from '../game-engine/roles';
 import { RoomsService } from '../rooms/rooms.service';
 import { RealtimeEventService } from '../common/realtime/realtime-event.service';
@@ -35,6 +40,22 @@ describe('GamesService (integration, B-R2/OD-059)', () => {
     realtime as unknown as RealtimeEventService,
   );
   const games = new GamesService(prisma);
+  // B-R4: drives the real NIGHT/VOTING resolution + GAME_OVER paths
+  // (NightActionService/VoteService -> PhaseTransitionService ->
+  // GameLifecycleService) — same wiring as rooms.service.spec.ts's B-R3
+  // death-path test.
+  const nightResolution = new NightResolutionService(gameLifecycle);
+  const voteResolution = new VoteResolutionService(gameLifecycle);
+  const phaseTransition = new PhaseTransitionService(
+    prisma,
+    gameLifecycle,
+    scheduler,
+    nightResolution,
+    voteResolution,
+    realtime as unknown as RealtimeEventService,
+  );
+  const nightActions = new NightActionService(prisma, commandRequests);
+  const votes = new VoteService(prisma, commandRequests, realtime as unknown as RealtimeEventService);
 
   const TEST_TELEGRAM_PREFIX = 'games-state-test-';
   let createdUserIds: string[] = [];
@@ -72,6 +93,11 @@ describe('GamesService (integration, B-R2/OD-059)', () => {
           where: { dedupeKey: { in: gameRows.map((g) => `phase-advance:${g.id}`) } },
         });
       }
+      const gameIds = gameRows.map((g) => g.id);
+      await prisma.gameAction.deleteMany({ where: { gameId: { in: gameIds } } });
+      await prisma.gameVote.deleteMany({ where: { gameId: { in: gameIds } } });
+      await prisma.gameResult.deleteMany({ where: { gameId: { in: gameIds } } });
+      await prisma.roleAbilityUsage.deleteMany({ where: { gameId: { in: gameIds } } });
       await prisma.gameRoleAssignment.deleteMany({ where: { game: { roomId: { in: createdRoomIds } } } });
       await prisma.gamePhase.deleteMany({ where: { game: { roomId: { in: createdRoomIds } } } });
       await prisma.gamePlayer.deleteMany({ where: { game: { roomId: { in: createdRoomIds } } } });
@@ -234,5 +260,183 @@ describe('GamesService (integration, B-R2/OD-059)', () => {
     const state = await games.getMyState({ gameId: room.gameId, userId: bot.id });
     expect(state.myRoleCode).toBe(assignment.roleCode);
     expect(state.myPlayerId).toBe(botPlayer.id);
+  });
+
+  describe('result (B-R4)', () => {
+    const forcePhaseDue = async (gameId: string) => {
+      const active = await prisma.gamePhase.findFirstOrThrow({ where: { gameId, endedAt: null } });
+      await prisma.gamePhase.update({ where: { id: active.id }, data: { endsAt: new Date(Date.now() - 1_000) } });
+      return active;
+    };
+
+    it('is absent (undefined) while the game is RUNNING', async () => {
+      const host = await makeUser();
+      const others = await Promise.all([makeUser(), makeUser(), makeUser()]);
+      const room = await createValidRoom(host.id, 4);
+      for (const other of others) {
+        await rooms.joinRoom({ userId: other.id, code: room.code, clientRequestId: randomUUID() });
+      }
+      await rooms.startGame({ userId: host.id, roomId: room.roomId, clientRequestId: randomUUID() });
+
+      const state = await games.getMyState({ gameId: room.gameId, userId: host.id });
+
+      expect(state.status).toBe('RUNNING');
+      expect(state.result).toBeUndefined();
+      expect(JSON.stringify(state)).not.toContain('"result"');
+    });
+
+    it('never leaks another player\'s role mid-game, including a player who already died (real night-kill path)', async () => {
+      const host = await makeUser();
+      const others = await Promise.all([makeUser(), makeUser(), makeUser()]);
+      const room = await createValidRoom(host.id, 4);
+      for (const other of others) {
+        await rooms.joinRoom({ userId: other.id, code: room.code, clientRequestId: randomUUID() });
+      }
+      const started = await rooms.startGame({ userId: host.id, roomId: room.roomId, clientRequestId: randomUUID() });
+
+      await forcePhaseDue(started.gameId);
+      await phaseTransition.advancePhase(started.gameId); // ROLE_REVEAL -> NIGHT
+
+      const hostPlayer = await prisma.gamePlayer.findUniqueOrThrow({
+        where: { gameId_userId: { gameId: started.gameId, userId: host.id } },
+      });
+      const assignments = await prisma.gameRoleAssignment.findMany({ where: { gameId: started.gameId } });
+      const mafia = assignments.find((a) => a.roleCode === RoleCode.MAFIA)!;
+      const mafiaPlayer = await prisma.gamePlayer.findUniqueOrThrow({ where: { id: mafia.playerId } });
+      // Deliberately not the host — the host's own id/role legitimately
+      // appears in its own response (myPlayerId/myRoleCode), which would
+      // make the "nothing else appears" check below a false negative if
+      // the victim happened to be the host itself.
+      const victim = assignments.find((a) => a.roleCode === RoleCode.CIVILIAN && a.playerId !== hostPlayer.id)!;
+
+      await nightActions.submitAction({
+        userId: mafiaPlayer.userId,
+        gameId: started.gameId,
+        clientRequestId: randomUUID(),
+        actionType: ActionType.KILL,
+        targetPlayerId: victim.playerId,
+      });
+
+      await forcePhaseDue(started.gameId);
+      await phaseTransition.advancePhase(started.gameId); // NIGHT -> NIGHT_RESOLUTION -> (LAST_WORD ->) MORNING
+
+      const victimPlayer = await prisma.gamePlayer.findUniqueOrThrow({ where: { id: victim.playerId } });
+      expect(victimPlayer.lifeStatus).toBe('DEAD'); // the real death path actually ran
+
+      const state = await games.getMyState({ gameId: started.gameId, userId: host.id });
+      expect(state.status).toBe('RUNNING');
+      expect(state.result).toBeUndefined();
+
+      // Neither an alive nor a dead other player's identity appears
+      // anywhere in the response — not even the night-kill victim's. This
+      // (not a roleCode-string search) is the precise check: two players
+      // share CIVILIAN in a 4p game, so searching for a role-code string
+      // would false-fail whenever the caller's own role matches someone
+      // else's.
+      const serialized = JSON.stringify(state);
+      for (const assignment of assignments) {
+        if (assignment.playerId === state.myPlayerId) continue;
+        expect(serialized).not.toContain(assignment.playerId);
+      }
+      expect(serialized).not.toContain(victim.playerId);
+    });
+
+    it('is present once FINISHED, with every seated player\'s role revealed, after a real night kill and a real vote execution', async () => {
+      const host = await makeUser();
+      const others = await Promise.all([makeUser(), makeUser(), makeUser()]);
+      const room = await createValidRoom(host.id, 4);
+      for (const other of others) {
+        await rooms.joinRoom({ userId: other.id, code: room.code, clientRequestId: randomUUID() });
+      }
+      const started = await rooms.startGame({ userId: host.id, roomId: room.roomId, clientRequestId: randomUUID() });
+
+      await forcePhaseDue(started.gameId);
+      await phaseTransition.advancePhase(started.gameId); // ROLE_REVEAL -> NIGHT
+
+      const assignments = await prisma.gameRoleAssignment.findMany({ where: { gameId: started.gameId } });
+      const mafia = assignments.find((a) => a.roleCode === RoleCode.MAFIA)!;
+      const mafiaPlayer = await prisma.gamePlayer.findUniqueOrThrow({ where: { id: mafia.playerId } });
+      const nightVictim = assignments.find((a) => a.roleCode === RoleCode.CIVILIAN)!;
+
+      // Real night kill.
+      await nightActions.submitAction({
+        userId: mafiaPlayer.userId,
+        gameId: started.gameId,
+        clientRequestId: randomUUID(),
+        actionType: ActionType.KILL,
+        targetPlayerId: nightVictim.playerId,
+      });
+
+      // Drive forward (NIGHT_RESOLUTION -> possibly LAST_WORD -> MORNING ->
+      // DISCUSSION -> VOTING) one stable stop at a time, bounded so a
+      // state-machine regression fails loudly instead of hanging.
+      for (let i = 0; i < 5; i += 1) {
+        const active = await prisma.gamePhase.findFirstOrThrow({ where: { gameId: started.gameId, endedAt: null } });
+        if (active.phase === 'VOTING') break;
+        await forcePhaseDue(started.gameId);
+        await phaseTransition.advancePhase(started.gameId);
+      }
+
+      const votingPhase = await prisma.gamePhase.findFirstOrThrow({ where: { gameId: started.gameId, endedAt: null } });
+      expect(votingPhase.phase).toBe('VOTING');
+
+      // Real vote execution: every surviving alive player votes out the Mafia.
+      const alivePlayers = await prisma.gamePlayer.findMany({
+        where: { gameId: started.gameId, lifeStatus: 'ALIVE' },
+      });
+      for (const voter of alivePlayers) {
+        await votes.castVote({
+          userId: voter.userId,
+          gameId: started.gameId,
+          clientRequestId: randomUUID(),
+          targetPlayerId: mafia.playerId,
+        });
+      }
+
+      // VOTING -> VOTE_RESOLUTION (applies the execution) -> either
+      // GAME_OVER directly or LAST_WORD first (a *stable*, timed phase —
+      // computeNextPhase's VOTE_RESOLUTION branch routes there whenever
+      // lastWordEnabled, stopping the cascade until forced again), then
+      // EXECUTION (transient) -> WIN_CHECK (transient) -> GAME_OVER. Drive
+      // with a bounded loop rather than assuming one call reaches the end.
+      for (let i = 0; i < 5; i += 1) {
+        const game = await prisma.game.findUniqueOrThrow({ where: { id: started.gameId } });
+        if (game.status !== 'RUNNING') break;
+        await forcePhaseDue(started.gameId);
+        await phaseTransition.advancePhase(started.gameId);
+      }
+
+      const finalGame = await prisma.game.findUniqueOrThrow({ where: { id: started.gameId } });
+      expect(finalGame.status).toBe('FINISHED');
+
+      const state = await games.getMyState({ gameId: started.gameId, userId: host.id });
+      expect(state.status).toBe('FINISHED');
+      expect(state.result).toBeDefined();
+      expect(state.result!.winnerTeam).toBe('TOWN');
+      expect(new Date(state.result!.finishedAt).getTime()).toBeLessThanOrEqual(Date.now());
+
+      expect(state.result!.players).toHaveLength(4);
+      for (const assignment of assignments) {
+        const entry = state.result!.players.find((p) => p.playerId === assignment.playerId)!;
+        expect(entry).toBeDefined();
+        expect(entry.roleCode).toBe(assignment.roleCode); // every role revealed, no exceptions
+        expect(entry.team).toBe(teamForRole(assignment.roleCode));
+      }
+
+      const nightVictimEntry = state.result!.players.find((p) => p.playerId === nightVictim.playerId)!;
+      expect(nightVictimEntry.lifeStatus).toBe('DEAD');
+      const mafiaEntry = state.result!.players.find((p) => p.playerId === mafia.playerId)!;
+      expect(mafiaEntry.lifeStatus).toBe('DEAD');
+      const survivors = state.result!.players.filter(
+        (p) => p.playerId !== nightVictim.playerId && p.playerId !== mafia.playerId,
+      );
+      expect(survivors.every((p) => p.lifeStatus === 'ALIVE')).toBe(true);
+
+      // A non-member still gets 404, even once the game is FINISHED.
+      const outsider = await makeUser();
+      await expect(games.getMyState({ gameId: started.gameId, userId: outsider.id })).rejects.toMatchObject(
+        new GameStateException(GameStateErrorCode.PLAYER_NOT_IN_GAME, 'Siz bu o‘yinda emassiz'),
+      );
+    });
   });
 });
