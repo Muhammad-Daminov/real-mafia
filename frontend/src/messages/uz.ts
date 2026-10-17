@@ -65,6 +65,7 @@ export const uz = {
     TOWN: 'Tinch aholi',
     MAFIA: 'Mafiya',
     NEUTRAL: 'Mustaqil',
+    DRAW: 'Durrang',
   },
   roles: {
     MAFIA: {
@@ -140,6 +141,28 @@ export const uz = {
     rosterUnavailable:
       'Nishonlar ro‘yxatini yuklab bo‘lmadi. Iltimos, ilovani yopib botdan qayta oching.',
   },
+  day: {
+    morningTitle: 'Tungi natija',
+    voteResultTitle: 'Ovoz natijasi',
+    diedLine: (name: string) => `${name} halok bo‘ldi.`,
+    rosterTitle: 'O‘yinchilar',
+    deadTag: 'halok bo‘lgan',
+    voteTitle: 'Ovoz bering',
+    confirmVoteButton: 'Ovoz berish',
+    changeVoteButton: 'Ovozni o‘zgartirish',
+    voteSubmitted: (name: string) => `Siz ${name}ga ovoz berdingiz.`,
+    liveTallyTitle: 'Joriy ovozlar',
+    spectatorNote: 'Siz halok bo‘lgansiz — faqat kuzatib turasiz.',
+  },
+  gameEnd: {
+    title: 'O‘yin yakunlandi',
+    resultUnavailable:
+      'Natijani yuklab bo‘lmadi — aloqa uzilgan paytda o‘yin tugagan bo‘lishi mumkin. Botdan qayta kiring.',
+    winnerLine: (teamName: string) => `G‘alaba: ${teamName}`,
+    youWon: 'Siz g‘alaba qozondingiz!',
+    youLost: 'Siz yutqazdingiz.',
+    backHome: 'Bosh sahifa',
+  },
   nightResults: {
     title: 'Tungi natija',
     DON_CHECK_RESULT: (isSheriff: boolean) =>
@@ -171,6 +194,7 @@ export const uz = {
     CONFIG_INVALID: 'Konfiguratsiya xatosi',
     GAME_NOT_FOUND: 'O‘yin topilmadi',
     GAME_NOT_IN_NIGHT_PHASE: 'Hozir tungi harakat qilib bo‘lmaydi',
+    GAME_NOT_IN_VOTING_PHASE: 'Hozir ovoz berib bo‘lmaydi',
     PLAYER_NOT_ALIVE: 'O‘lik o‘yinchi harakat qila olmaydi',
     ROLE_HAS_NO_SUCH_ACTION: 'Rolingiz bu harakatni bajara olmaydi',
     ABILITY_ALREADY_USED: 'Bu qobiliyat allaqachon ishlatilgan',

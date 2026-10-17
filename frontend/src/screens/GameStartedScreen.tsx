@@ -1,71 +1,43 @@
-import { uz } from '../messages/uz';
-import { useLobbyStore } from '../store/lobbyStore';
 import { useGameStore } from '../store/gameStore';
-import { disconnectSocket } from '../socket/socketClient';
-import { phaseLabel, roleInfo } from '../game/labels';
-import { useCountdown } from '../game/useCountdown';
-import { nightResultMessage } from '../game/nightResultMessage';
 import RoleRevealScreen from './RoleRevealScreen';
 import NightScreen from './NightScreen';
+import DayScreen from './DayScreen';
+import GameEndScreen from './GameEndScreen';
 
 /**
- * F3: replaces the placeholder "Game started - phase: X" screen with the
- * minimal in-game phase screen — uz phase label, round number, countdown
- * from `phaseEndsAt` (OD-F3-001: plain local-clock countdown, no
- * server-time-offset mechanism exists in this codebase). Shows
+ * F3/F4/F5: thin router within the "game has started" shell —
+ * `App.tsx` swaps this in once `currentPhase` leaves `LOBBY`. Shows
  * `RoleRevealScreen` first if the caller's role is known and not yet
- * dismissed; afterwards a small "My role" chip stays visible here. Night/
- * voting/chat screens are a later slice's scope.
+ * dismissed; then `GameEndScreen` once the game has finished
+ * (`status === 'FINISHED'`, checked before the phase-based routes below —
+ * GAME_OVER is terminal, nothing else is reachable after it); then
+ * `NightScreen` for NIGHT; `DayScreen` for everything else (MORNING/
+ * DISCUSSION/VOTING/LAST_WORD/the transient resolution phases).
  */
 function GameStartedScreen() {
+  const status = useGameStore((s) => s.status);
   const phase = useGameStore((s) => s.phase);
-  const round = useGameStore((s) => s.round);
-  const phaseEndsAt = useGameStore((s) => s.phaseEndsAt);
   const myRoleCode = useGameStore((s) => s.myRoleCode);
   const roleRevealDismissed = useGameStore((s) => s.roleRevealDismissed);
-  const stateError = useGameStore((s) => s.stateError);
-  const nightResult = useGameStore((s) => s.nightResult);
-  const countdown = useCountdown(phaseEndsAt);
-
-  const handleBackHome = () => {
-    disconnectSocket();
-    useLobbyStore.getState().reset();
-    useGameStore.getState().reset();
-  };
 
   if (myRoleCode && !roleRevealDismissed) {
     return <RoleRevealScreen />;
+  }
+
+  // `phase === 'GAME_OVER'` updates synchronously from the PHASE_CHANGED
+  // socket payload; `status === 'FINISHED'` only catches up once the
+  // fire-and-forget GET /games/:gameId/state refetch that event also
+  // triggers resolves — checking both avoids a brief flash of DayScreen
+  // in between.
+  if (status === 'FINISHED' || phase === 'GAME_OVER') {
+    return <GameEndScreen />;
   }
 
   if (phase === 'NIGHT') {
     return <NightScreen />;
   }
 
-  return (
-    <div className="mafia-screen">
-      <h1>{uz.started.title}</h1>
-
-      {stateError && <p className="mafia-banner mafia-banner--error">{uz.gameScreen.stateError}</p>}
-
-      <div className="mafia-card">
-        <p style={{ fontSize: 18, fontWeight: 600, margin: 0 }}>{phaseLabel(phase ?? '')}</p>
-        <p className="mafia-hint" style={{ margin: 0 }}>{uz.gameScreen.round(round)}</p>
-        <p style={{ fontSize: 28, fontWeight: 700, margin: 0 }}>{countdown ?? uz.gameScreen.noDeadline}</p>
-        {myRoleCode && <span className="mafia-badge">{uz.roleReveal.roleChip(roleInfo(myRoleCode).name)}</span>}
-      </div>
-
-      {nightResult && (
-        <div className="mafia-card">
-          <p style={{ fontWeight: 600, margin: 0 }}>{uz.nightResults.title}</p>
-          <p className="mafia-hint" style={{ margin: 0 }}>{nightResultMessage(nightResult.event, nightResult.payload)}</p>
-        </div>
-      )}
-
-      <button className="mafia-button mafia-button--secondary" onClick={handleBackHome}>
-        {uz.started.backHome}
-      </button>
-    </div>
-  );
+  return <DayScreen />;
 }
 
 export default GameStartedScreen;
