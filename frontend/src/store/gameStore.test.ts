@@ -548,19 +548,19 @@ describe('gameStore — myVote / voteTally (F5)', () => {
   });
 });
 
-describe('gameStore — applyGameFinished (F5)', () => {
-  it('sets gameResult from the GAME_FINISHED payload', async () => {
+describe('gameStore — applyGameFinished (F5/F5.1)', () => {
+  it('sets a provisional gameResult (winnerTeam only) from the GAME_FINISHED payload', async () => {
     const { useGameStore } = await import('./gameStore');
     useGameStore.getState().applyGameFinished('TOWN');
 
-    expect(useGameStore.getState().gameResult).toEqual({ winnerTeam: 'TOWN' });
+    expect(useGameStore.getState().gameResult).toEqual({ winnerTeam: 'TOWN', finishedAt: null, players: null });
   });
 
   it('accepts a null winnerTeam without crashing', async () => {
     const { useGameStore } = await import('./gameStore');
     useGameStore.getState().applyGameFinished(null);
 
-    expect(useGameStore.getState().gameResult).toEqual({ winnerTeam: null });
+    expect(useGameStore.getState().gameResult).toEqual({ winnerTeam: null, finishedAt: null, players: null });
   });
 
   it('reset() clears gameResult back to null', async () => {
@@ -569,5 +569,123 @@ describe('gameStore — applyGameFinished (F5)', () => {
     useGameStore.getState().reset();
 
     expect(useGameStore.getState().gameResult).toBeNull();
+  });
+
+  it('triggers a getGameState refetch so the full role reveal arrives', async () => {
+    const { useGameStore } = await import('./gameStore');
+    await useGameStore.getState().initFromGameId('game-1'); // seeds gameId
+    getGameStateMock.mockClear();
+    getGameStateMock.mockResolvedValue(
+      makeSnapshot({
+        status: 'FINISHED',
+        currentPhase: 'GAME_OVER',
+        result: {
+          winnerTeam: 'TOWN',
+          finishedAt: '2026-01-01T00:20:00.000Z',
+          players: [{ playerId: 'player-1', displayName: 'Me', roleCode: 'CIVILIAN', team: 'TOWN', lifeStatus: 'ALIVE' }],
+        },
+      }),
+    );
+
+    useGameStore.getState().applyGameFinished('TOWN');
+    await vi.waitFor(() => {
+      expect(useGameStore.getState().gameResult?.players).not.toBeNull();
+    });
+
+    expect(getGameStateMock).toHaveBeenCalledWith('game-1');
+    expect(useGameStore.getState().gameResult).toEqual({
+      winnerTeam: 'TOWN',
+      finishedAt: '2026-01-01T00:20:00.000Z',
+      players: [{ playerId: 'player-1', displayName: 'Me', roleCode: 'CIVILIAN', team: 'TOWN', lifeStatus: 'ALIVE' }],
+    });
+  });
+});
+
+describe('gameStore — gameResult REST source (F5.1)', () => {
+  const resultPayload = {
+    winnerTeam: 'MAFIA' as const,
+    finishedAt: '2026-01-01T00:30:00.000Z',
+    players: [
+      { playerId: 'player-1', displayName: 'Me', roleCode: 'CIVILIAN' as const, team: 'TOWN' as const, lifeStatus: 'DEAD' as const },
+      { playerId: 'player-2', displayName: 'Other', roleCode: 'MAFIA' as const, team: 'MAFIA' as const, lifeStatus: 'ALIVE' as const },
+    ],
+  };
+
+  it('initFromGameId populates gameResult straight away when the snapshot is already FINISHED (reload path)', async () => {
+    const { useGameStore } = await import('./gameStore');
+    getGameStateMock.mockResolvedValue(
+      makeSnapshot({ status: 'FINISHED', currentPhase: 'GAME_OVER', result: resultPayload }),
+    );
+
+    await useGameStore.getState().initFromGameId('game-1');
+
+    const s = useGameStore.getState();
+    expect(s.status).toBe('FINISHED');
+    expect(s.gameResult).toEqual(resultPayload);
+  });
+
+  it('refetchState populates gameResult once the game has finished', async () => {
+    const { useGameStore } = await import('./gameStore');
+    await useGameStore.getState().initFromGameId('game-1');
+    expect(useGameStore.getState().gameResult).toBeNull();
+
+    getGameStateMock.mockResolvedValue(
+      makeSnapshot({ status: 'FINISHED', currentPhase: 'GAME_OVER', result: resultPayload }),
+    );
+    await useGameStore.getState().refetchState();
+
+    expect(useGameStore.getState().gameResult).toEqual(resultPayload);
+  });
+
+  it('a snapshot with no result field (not yet FINISHED) leaves gameResult untouched', async () => {
+    const { useGameStore } = await import('./gameStore');
+    getGameStateMock.mockResolvedValue(makeSnapshot());
+
+    await useGameStore.getState().initFromGameId('game-1');
+
+    expect(useGameStore.getState().gameResult).toBeNull();
+  });
+
+  it('REST wins when a later REST result disagrees with an earlier GAME_FINISHED event', async () => {
+    const { useGameStore } = await import('./gameStore');
+    await useGameStore.getState().initFromGameId('game-1');
+
+    useGameStore.getState().applyGameFinished('TOWN'); // provisional, event-sourced
+    expect(useGameStore.getState().gameResult).toEqual({ winnerTeam: 'TOWN', finishedAt: null, players: null });
+
+    getGameStateMock.mockResolvedValue(
+      makeSnapshot({ status: 'FINISHED', currentPhase: 'GAME_OVER', result: resultPayload }), // disagrees: MAFIA
+    );
+    await useGameStore.getState().refetchState();
+
+    expect(useGameStore.getState().gameResult).toEqual(resultPayload); // REST (MAFIA) wins over the event (TOWN)
+  });
+
+  it('a GAME_FINISHED event arriving after REST already supplied the full result is ignored', async () => {
+    const { useGameStore } = await import('./gameStore');
+    getGameStateMock.mockResolvedValue(
+      makeSnapshot({ status: 'FINISHED', currentPhase: 'GAME_OVER', result: resultPayload }),
+    );
+    await useGameStore.getState().initFromGameId('game-1');
+    expect(useGameStore.getState().gameResult).toEqual(resultPayload);
+
+    useGameStore.getState().applyGameFinished('TOWN'); // stale/late event, disagrees with REST
+
+    expect(useGameStore.getState().gameResult).toEqual(resultPayload); // unchanged — REST already won
+  });
+
+  it('an unrecognized winnerTeam string is stored as-is rather than guessed or dropped', async () => {
+    const { useGameStore } = await import('./gameStore');
+    getGameStateMock.mockResolvedValue(
+      makeSnapshot({
+        status: 'FINISHED',
+        currentPhase: 'GAME_OVER',
+        result: { ...resultPayload, winnerTeam: 'SOME_FUTURE_TEAM' },
+      }),
+    );
+
+    await useGameStore.getState().initFromGameId('game-1');
+
+    expect(useGameStore.getState().gameResult?.winnerTeam).toBe('SOME_FUTURE_TEAM');
   });
 });

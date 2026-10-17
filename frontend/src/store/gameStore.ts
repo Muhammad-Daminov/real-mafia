@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { ApiError } from '../api/client';
-import { getGameState, type GameStateResponse, type GameStateTeammate, type LifeStatus, type RoleCode, type Team, type WinnerTeam } from '../api/games';
+import { getGameState, type GameResultPlayer, type GameStateResponse, type GameStateTeammate, type LifeStatus, type RoleCode, type Team, type WinnerTeam } from '../api/games';
 import type { SubmittedNightAction } from '../api/nightActions';
 import { getVoteTally, type CastVoteResponse, type VoteTallyEntry } from '../api/votes';
 import { getRoomByCode, type GamePhaseName, type GameStatus, type RoomPlayerSummary } from '../api/rooms';
@@ -26,6 +26,21 @@ export interface MySubmittedAction {
 export interface NightResult {
   event: string;
   payload: Record<string, unknown>;
+}
+
+/**
+ * F5.1: looser than the REST `GameResultPayload` (api/games.ts) —
+ * `finishedAt`/`players` are `null` for the `GAME_FINISHED` socket
+ * event's own provisional write (the event only ever carries
+ * `winnerTeam`), populated once the REST refetch it triggers resolves.
+ * `winnerTeam: null` only arises if a future backend value isn't one
+ * `WinnerTeam` already recognizes — never guessed, never defaulted to a
+ * specific team.
+ */
+export interface GameResult {
+  winnerTeam: WinnerTeam | null;
+  finishedAt: string | null;
+  players: GameResultPlayer[] | null;
 }
 
 export interface GameState {
@@ -88,10 +103,14 @@ export interface GameState {
    * convention `lobbyStore.ts` already established for partial events). */
   voteTally: VoteTallyEntry[] | null;
   voteTallyError: string | null;
-  /** F5/OD-F5-001: set only from the `GAME_FINISHED` socket payload — no
-   * REST endpoint returns the game result to a member after the fact, so
-   * this stays `null` forever on a reload that missed the event. */
-  gameResult: { winnerTeam: WinnerTeam | null } | null;
+  /** F5.1/OD-F5-001 (resolved by backend 95a2908): comes from EITHER the
+   * `GAME_FINISHED` socket event (provisional — `winnerTeam` only) OR
+   * `GET /games/:gameId/state`'s `result` (authoritative — also carries
+   * the full role reveal). REST always wins if the two ever disagree —
+   * see `applyGameResult`. A reload now recovers the full result via
+   * REST; only a session whose `gameId` predates the game actually
+   * finishing has nothing to show yet. */
+  gameResult: GameResult | null;
   stateLoading: boolean;
   stateError: string | null;
 }
@@ -131,8 +150,21 @@ interface GameActions {
   applyVoteCast: () => void;
   /** Re-fetches `GET /games/:gameId/votes` for the already-known `gameId`. */
   refetchVoteTally: () => Promise<void>;
-  /** `GAME_FINISHED` socket handler — the only source of `gameResult`
-   * (OD-F5-001: no REST fallback exists). */
+  /**
+   * The one path every `gameResult` write goes through (task: "single
+   * code path, REST wins if both disagree"). `source: 'rest'` always
+   * overwrites outright — `GET /games/:gameId/state`'s `result` is
+   * authoritative whenever it's present at all. `source: 'event'` (the
+   * `GAME_FINISHED` socket payload) only ever writes a provisional entry,
+   * and is ignored outright once a `'rest'` write has already supplied
+   * the full `players` list — a later event can never un-reveal roles
+   * REST already confirmed.
+   */
+  applyGameResult: (result: GameResult, source: 'rest' | 'event') => void;
+  /** `GAME_FINISHED` socket handler — writes a provisional `gameResult`
+   * (via `applyGameResult`, `source: 'event'`) and triggers one
+   * `refetchState` so the full REST result (role reveal included)
+   * arrives, unless it already has. */
   applyGameFinished: (winnerTeam: WinnerTeam | null) => void;
   dismissRoleReveal: () => void;
   reset: () => void;
@@ -238,6 +270,14 @@ export const useGameStore = create<GameState & GameActions>((set, get) => {
 
       writeStoredGameId(snapshot.gameId);
       set(applySnapshot(snapshot));
+      // F5.1: present only once status is FINISHED — reload/reconnect's
+      // one path to the full result, no "stuck waiting" state.
+      if (snapshot.result) {
+        get().applyGameResult(
+          { winnerTeam: snapshot.result.winnerTeam, finishedAt: snapshot.result.finishedAt, players: snapshot.result.players },
+          'rest',
+        );
+      }
     } catch (error) {
       if (seq !== stateSeq) return;
       // A definitive "not a member" also clears `gameId` itself, not just
@@ -267,6 +307,12 @@ export const useGameStore = create<GameState & GameActions>((set, get) => {
       if (seq !== stateSeq) return;
 
       set(applySnapshot(snapshot));
+      if (snapshot.result) {
+        get().applyGameResult(
+          { winnerTeam: snapshot.result.winnerTeam, finishedAt: snapshot.result.finishedAt, players: snapshot.result.players },
+          'rest',
+        );
+      }
     } catch (error) {
       if (seq !== stateSeq) return;
       // A definitive "not a member" also clears `gameId` itself, not just
@@ -397,8 +443,16 @@ export const useGameStore = create<GameState & GameActions>((set, get) => {
     }
   },
 
+  applyGameResult: (result, source) => {
+    if (source === 'event' && get().gameResult?.players) return; // REST already won
+    set({ gameResult: result });
+  },
+
   applyGameFinished: (winnerTeam) => {
-    set({ gameResult: { winnerTeam } });
+    get().applyGameResult({ winnerTeam, finishedAt: null, players: null }, 'event');
+    if (!get().gameResult?.players) {
+      void get().refetchState();
+    }
   },
 
   dismissRoleReveal: () => set({ roleRevealDismissed: true }),
