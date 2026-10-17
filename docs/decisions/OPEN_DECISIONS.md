@@ -1333,6 +1333,61 @@ source of truth for "what is my role" (both read the same
 This is an addition to §12.1/§20/§21/§31/OD-041 and should be folded into
 the Master TZ at the next revision, same as OD-035–058.
 
+### OD-060 — Dev-Only Bot Players: Phase-Start Detection, Primary-Ability-Only, No Abstain · RESOLVED
+Context: B-D2 needed bots that act on their own during NIGHT/VOTING so one
+human can play (and finish) a full game solo, entirely inside `dev-tools/`
+(never loaded in production, same gate as OD-056) and strictly through the
+real `NightActionService`/`VoteService` paths. Four choices the task left
+open:
+
+1. **How a bot's task "notices" a phase has started, without `game-engine`
+   depending on `dev-tools`.** `PhaseTransitionService` is not touched or
+   given any hook back into `dev-tools` — that would mean the production
+   phase-transition engine importing a module that must not exist at all
+   outside dev, the wrong dependency direction (same spirit as I-33's
+   `game-engine`/economy rule, generalized). Instead `BotPlayersService`
+   runs its own lightweight poll (`scanAndSchedule`, every 1.5s, a plain
+   `setInterval` — not a second `ScheduledTask` kind, to avoid a
+   self-rescheduling task that could silently stop if one run ever threw)
+   that looks for active NIGHT/VOTING `GamePhase` rows on `RUNNING` games
+   and schedules one `DEV_BOT_ACT` `ScheduledTask` per alive bot found —
+   the *acting* step reuses `SchedulerService`'s existing lease/retry
+   machinery (same as `PHASE_ACTIVE_CHECK`), only the *noticing* step is a
+   bespoke interval, scoped entirely inside this dev-only module.
+2. **Preventing a bot from being rescheduled forever once its first task
+   is `DONE`.** `SchedulerService.enqueue`'s own `dedupeKey` collision
+   check only guards `PENDING`/`LEASED` rows (built for "don't double-
+   submit a concurrent retry of the one in-flight request," not "never
+   repeat, ever"). `BotPlayersService.scheduleBotAct` adds its own check —
+   ANY existing row for `dev-bot-act:{phaseId}:{playerId}`, regardless of
+   status — before calling `enqueue` at all, so a bot gets exactly one
+   task per phase occurrence, never re-added by the next poll tick once
+   the first reaches `DONE`.
+3. **Which ability a bot uses when a role has more than one (Don).**
+   Decision: only the role's `primaryAbility` (`role-abilities.ts`) is
+   ever auto-submitted — Don's optional secondary `CHECK` is never
+   auto-submitted by a bot, mirroring the frontend's own NightScreen
+   (F4.1), which only ever builds a picker for the primary ability either.
+   "A random valid action" (singular, task's own wording) is read as one
+   action per bot per night, not every ability a role happens to have.
+4. **Vote abstention.** Checked before building anything: `VoteService`
+   has no abstain action — `castVote` always requires a `targetPlayerId`,
+   and there is no "no vote"/null-target value anywhere in its validation.
+   A bot therefore always casts a vote, for a random alive target
+   (self included — OD-045 already allows self-vote) — never abstains,
+   since the real rules (per the task's own "if the real rules allow it"
+   framing) simply don't have an abstain action to call.
+
+**DI wiring, not a behavior change.** `GameEngineModule` now also exports
+`NightActionService`/`VoteService` (previously provider-only, not
+exported) so `BotPlayersService` can inject the real singletons —
+`dev-tools` importing `game-engine` is the same direction `rooms` already
+established; `game-engine` has zero knowledge of `dev-tools` either way,
+and `depcruise` still reports zero violations.
+
+This is a dev-tooling addition, not a Master TZ gameplay behavior — no §
+section to fold it into.
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
 None. Every previously blocking decision is resolved (see the addendum above).
@@ -1361,6 +1416,6 @@ None. Every previously blocking decision is resolved (see the addendum above).
   2026-09-25 addendum resolved them.)
 - OD-031–OD-034 are new in v6.0 (MASTER_TZ.md §42.2/§42.1) and non-blocking, each with a
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
-- Total: 49 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
-  OD-037 through OD-059 recorded 2026-09-26/27/28/2026-10-05), 0 open+blocking,
-  10 open+non-blocking (59 IDs, OD-001 through OD-059).
+- Total: 50 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
+  OD-037 through OD-060 recorded 2026-09-26/27/28/2026-10-05/2026-10-17), 0 open+blocking,
+  10 open+non-blocking (60 IDs, OD-001 through OD-060).

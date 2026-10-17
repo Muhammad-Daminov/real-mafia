@@ -7,6 +7,7 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtStrategy } from '../auth/strategies/jwt.strategy';
 import { resolveDevToolsImports } from './dev-tools.config';
+import { BotPlayersService } from './bots/bot-players.service';
 
 /**
  * Registers just enough for `JwtGuard` (`AuthGuard('jwt')`) to find its
@@ -101,6 +102,18 @@ describe('DevToolsModule (boot / route-table, B-D1)', () => {
     const response = await request(app.getHttpServer()).post('/dev/rooms/ABCDEF/fill-bots').send({ count: 1 });
 
     expect(response.status).toBe(404);
+  });
+
+  it('B-D2: BotPlayersService (and therefore its watcher/handler) does not exist in the DI graph when DEV_TOOLS_ENABLED is unset', async () => {
+    app = await bootWith({ DEV_TOOLS_ENABLED: undefined, NODE_ENV: 'development' });
+
+    expect(() => app!.get(BotPlayersService)).toThrow();
+  });
+
+  it('B-D2: BotPlayersService is resolvable when DEV_TOOLS_ENABLED=true and NODE_ENV is not production', async () => {
+    app = await bootWith({ DEV_TOOLS_ENABLED: 'true', NODE_ENV: 'development' });
+
+    expect(app!.get(BotPlayersService)).toBeInstanceOf(BotPlayersService);
   });
 
   it('the route exists (guard rejects with 401, not 404) when DEV_TOOLS_ENABLED=true and NODE_ENV is not production', async () => {

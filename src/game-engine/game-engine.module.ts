@@ -69,6 +69,14 @@ import { VotingController } from './voting/voting.controller';
     VoteResolutionService,
     CommandRequestService,
   ],
-  exports: [RoleAssignmentService, GameLifecycleService, PhaseTransitionService],
+  // B-D2: `NightActionService`/`VoteService` exported so `dev-tools/`'s
+  // `BotPlayersService` can submit real actions/votes for its bots through
+  // the exact same validated path a human player's HTTP request goes
+  // through, instead of a shortcut write. Purely a DI-visibility change —
+  // no new behavior for either service, and the dependency direction stays
+  // one-way (`dev-tools` imports `game-engine`; `game-engine` has no
+  // knowledge of `dev-tools` at all, same as `rooms` already imports this
+  // module today).
+  exports: [RoleAssignmentService, GameLifecycleService, PhaseTransitionService, NightActionService, VoteService],
 })
 export class GameEngineModule {}
