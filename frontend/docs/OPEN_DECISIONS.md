@@ -381,6 +381,83 @@ is a one-time migration edge case — any session that starts fresh from
 this point on always has both written together — not treated as worth
 a backend addition for.
 
+## OD-F5-001 — No REST endpoint returns the game result after GAME_FINISHED; no event names a single night death or a vote execution's target
+
+**Context.** F5 needed: (a) how a client learns the final result (winner,
+role reveal, stats) after a reload, and (b) how a client learns *who* died
+each night or was executed by a vote, for the morning announcement and the
+vote-result display. Checked every candidate before building anything:
+
+- **The result after GAME_FINISHED.** `GamesService.getMyState`
+  (`GET /games/:gameId/state`, OD-059) returns `{gameId, status,
+  currentPhase, round, phaseEndsAt, myPlayerId, myLifeStatus, myRoleCode,
+  myTeam, teammates}` — `status`/`currentPhase` do correctly read back as
+  `'FINISHED'`/`'GAME_OVER'`, but there is no `winnerTeam` field anywhere
+  in that response. `GameResult` (`winnerTeam`, written by
+  `GameLifecycleService.transitionPhase` at `GAME_OVER`) is read by
+  exactly one call site in the whole backend —
+  `PhaseTransitionService.advancePhase`'s own post-commit `GAME_FINISHED`
+  broadcast (`{winnerTeam}`) — confirmed by grepping every file for
+  `GameResult`/`gameResult`. No controller reads it. The event payload
+  itself also carries no role-reveal list or stats — `GameResult` has no
+  columns for either, so there is nothing to carry even if a REST endpoint
+  existed.
+- **Who died/was executed.** `MULTIPLE_DEATHS` (§17.5/OD-050) is PUBLIC
+  but fires *only* when a night kills more than one player — "a
+  single-death night broadcasts nothing this slice" is OD-050's own
+  literal text. `VOTE_RESOLUTION`'s outcome
+  (`VoteResolutionService.resolveRound`) returns only
+  `{executionOccurred: boolean}` to its caller — the executed player's id
+  is applied to `life_status` but never returned, logged to a broadcast,
+  or exposed any other way. There is no "vote result" event at all, only
+  `VOTE_CAST` (per-ballot, OD-020a) and the generic `PHASE_CHANGED`.
+
+**Decision (per this task's own instruction): build only the realtime
+path, say what breaks on reload.**
+- `gameStore.gameResult` is set **only** by the `GAME_FINISHED` socket
+  event (`socketClient.ts`). There is no REST fallback to call instead —
+  none exists. A reload (or a dropped connection) that misses this one
+  fire-and-forget emission leaves `gameResult` `null` forever for that
+  game; `GameEndScreen.tsx` shows `uz.gameEnd.resultUnavailable` in that
+  case rather than a guessed winner. `status`/`phase` themselves *do*
+  still resolve correctly via `GET /games/:gameId/state` on reload (so
+  routing to `GameEndScreen` at all works), it's specifically the winner
+  that's unrecoverable.
+- "Who died" (`gameStore.lastDeaths`, `game/deathDiff.ts`) is **not** read
+  from any event — it's a diff between the current `GET /rooms/:code`
+  roster snapshot and the previous one already in memory, computed fresh
+  every `refetchRoster` call (which already runs on every `PHASE_CHANGED`
+  and reconnect, F4.1's existing wiring). This correctly catches every
+  death regardless of count (unlike `MULTIPLE_DEATHS`) and a vote
+  execution (which has no event at all), but has two real limitations: a
+  reload loses the diff entirely (the fresh roster fetch has no "previous
+  snapshot" to compare against — `computeDeathDiff` returns `null` for
+  exactly this case, by design, rather than inventing a false positive),
+  and the NIGHT-vs-VOTE context tag (`lastPhaseFrom`) is only as fresh as
+  the most recent `PHASE_CHANGED` this client actually received — a
+  reconnect-triggered refetch with no specific transition behind it tags
+  the diff `context: null`, shown with generic wording rather than framed
+  as either a night death or an execution.
+- No role-reveal list is built anywhere (`GameEndScreen.tsx` has no
+  section for one) — not a hidden-but-unused feature, there is simply no
+  payload field to read one from.
+
+**Proposed minimal backend addition (not implemented — out of this
+slice's scope, "do not modify the backend").** Add `winnerTeam:
+WinnerTeam | null` to `GameStateResponse` when `status === 'FINISHED'`
+(the data is already one `prisma.gameResult.findUnique` away, the same
+read `PhaseTransitionService` already does for its own broadcast) — this
+alone closes the reload gap for the result. Separately, having
+`VoteResolutionService.resolveRound` return the executed player's id (it
+already knows it — `outcome.executionTarget`) up to
+`PhaseTransitionService`, which could then broadcast a `VOTE_RESULT`
+event the same way `MULTIPLE_DEATHS` already works, would close the
+"who was executed" gap without relying on a roster diff at all; the same
+shape (returning death ids, not just a boolean) from
+`NightResolutionService.resolveRound` already exists for nights (see
+`nightDeathsToEmit`) — only a single-death night and a vote execution are
+missing the equivalent broadcast today.
+
 ## Resolved gap (was open, fixed on the backend side): CORS
 
 **Originally flagged here:** `src/main.ts` never called `app.enableCors()`,
