@@ -1,0 +1,129 @@
+.rm-lobby__code-label {
+  color: var(--rm-text-2);
+  font: var(--rm-caption-weight) var(--rm-caption-size)/1 var(--rm-font-family);
+}
+
+.rm-lobby__code {
+  font-size: 34px;
+  font-weight: 800;
+  letter-spacing: 4px;
+  text-align: center;
+}
+
+.rm-lobby__code-actions {
+  display: flex;
+  gap: var(--rm-space-2);
+}
+
+.rm-lobby__code-actions > * {
+  flex: 1;
+}
+
+.rm-lobby__progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rm-space-1);
+}
+
+.rm-lobby__progress-bar {
+  height: 6px;
+  border-radius: var(--rm-radius-full);
+  background: var(--rm-surface-2);
+  overflow: hidden;
+}
+
+.rm-lobby__progress-fill {
+  height: 100%;
+  background: var(--rm-accent);
+  transition: width var(--rm-duration-base) var(--rm-ease);
+}
+
+.rm-lobby__progress-label {
+  color: var(--rm-text-2);
+  font-size: var(--rm-caption-size);
+}
+
+.rm-lobby__hint {
+  margin: 0;
+  color: var(--rm-text-2);
+  font-size: var(--rm-caption-size);
+}
+
+.rm-lobby__grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--rm-space-3);
+}
+
+.rm-lobby__tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--rm-space-1);
+  padding: var(--rm-space-2);
+  border-radius: var(--rm-radius-md);
+  background: var(--rm-surface-2);
+}
+
+.rm-lobby__tile--empty {
+  background: transparent;
+  border: 1px dashed var(--rm-border-strong);
+}
+
+.rm-lobby__empty-avatar {
+  display: block;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px dashed var(--rm-border-strong);
+}
+
+.rm-lobby__tile-name {
+  font-size: var(--rm-caption-size);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.rm-lobby__tile-name--empty {
+  color: var(--rm-text-3);
+  font-weight: 400;
+}
+
+.rm-lobby__tile-you {
+  color: var(--rm-text-2);
+  font-weight: 400;
+}
+
+.rm-lobby__tile-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--rm-space-1);
+}
+
+.rm-lobby__start-reason {
+  margin: 0;
+  text-align: center;
+  color: var(--rm-text-2);
+  font-size: var(--rm-caption-size);
+}
+
+.rm-lobby__dev {
+  color: var(--rm-text-3);
+  font-size: var(--rm-caption-size);
+}
+
+.rm-lobby__dev summary {
+  cursor: pointer;
+  padding: var(--rm-space-2) 0;
+}
+
+.rm-lobby__dev-row {
+  display: flex;
+  align-items: center;
+  gap: var(--rm-space-2);
+}

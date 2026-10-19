@@ -8,6 +8,8 @@ import { fillBots } from '../api/devTools';
 import { ApiError } from '../api/client';
 import { describeRoomError } from '../errors/roomErrorMessages';
 import { isDevMode } from '../debugFlags';
+import { Screen, Card, Button, Banner, Avatar, Badge } from '../ui';
+import './LobbyScreen.css';
 
 interface DevBotsPanelProps {
   code: string;
@@ -24,7 +26,9 @@ interface DevBotsPanelProps {
  * broadcasts the same `PLAYER_JOINED`/`PLAYER_READY_CHANGED` events any
  * other join does — `socketClient.ts`'s existing handler already schedules
  * the debounced roster refetch for those, so a second manual refetch here
- * would just be a redundant duplicate request.
+ * would just be a redundant duplicate request. F7a: collapsed behind a
+ * `<details>` so it never competes with the real UI for space, even while
+ * `?dev=1` is on.
  */
 function DevBotsPanel({ code }: DevBotsPanelProps) {
   const [count, setCount] = useState(3);
@@ -55,30 +59,28 @@ function DevBotsPanel({ code }: DevBotsPanelProps) {
   };
 
   return (
-    <div className="mafia-card" style={{ border: '1px dashed orange' }}>
-      <strong>DEV</strong>
-      <div className="mafia-row">
-        <input
-          type="number"
-          min={1}
-          value={count}
-          onChange={(e) => setCount(Math.max(1, Number(e.target.value) || 1))}
-          style={{ width: 60 }}
-          aria-label="Bot count"
-        />
-        <label>
-          <input type="checkbox" checked={ready} onChange={(e) => setReadyChecked(e.target.checked)} /> Ready
-        </label>
-        <button
-          className="mafia-button mafia-button--secondary"
-          onClick={() => void handleFill()}
-          disabled={busy}
-        >
-          {busy ? '…' : 'Fill with bots'}
-        </button>
-      </div>
-      {error && <p className="mafia-banner mafia-banner--error">{error}</p>}
-    </div>
+    <details className="rm-lobby__dev">
+      <summary>{uz.lobby.devSectionTitle}</summary>
+      <Card>
+        <div className="rm-lobby__dev-row">
+          <input
+            type="number"
+            min={1}
+            value={count}
+            onChange={(e) => setCount(Math.max(1, Number(e.target.value) || 1))}
+            style={{ width: 60 }}
+            aria-label="Bot count"
+          />
+          <label>
+            <input type="checkbox" checked={ready} onChange={(e) => setReadyChecked(e.target.checked)} /> Ready
+          </label>
+          <Button variant="secondary" fullWidth={false} onClick={() => void handleFill()} disabled={busy}>
+            {busy ? '…' : 'Fill with bots'}
+          </Button>
+        </div>
+        {error && <Banner variant="error">{error}</Banner>}
+      </Card>
+    </details>
   );
 }
 
@@ -91,45 +93,44 @@ const START_REASON_TEXT: Record<NonNullable<ReturnType<typeof canStartGame>['rea
   NOT_IN_LOBBY: () => uz.lobby.startReasonNotInLobby,
 };
 
-interface PlayerRowProps {
+interface PlayerTileProps {
   player: RoomPlayerSummary;
   isMe: boolean;
 }
 
-function PlayerRow({ player, isMe }: PlayerRowProps) {
+function PlayerTile({ player, isMe }: PlayerTileProps) {
   return (
-    <div className="mafia-player-row">
-      {player.avatarUrl ? (
-        <img className="mafia-avatar" src={player.avatarUrl} alt="" width={36} height={36} />
-      ) : (
-        <div className="mafia-avatar">{player.displayName.slice(0, 1).toUpperCase()}</div>
-      )}
-      <div style={{ flex: 1, textAlign: 'left' }}>
-        <div>
-          {player.displayName}
-          {isMe && <span className="mafia-hint" style={{ marginLeft: 6 }}>({uz.lobby.you})</span>}
-          {player.isHost && (
-            <span className="mafia-badge" style={{ marginLeft: 6 }}>
-              {uz.lobby.host}
-            </span>
-          )}
-        </div>
-      </div>
-      <span className={`mafia-badge ${player.isReady ? 'mafia-badge--ready' : ''}`}>
-        {player.isReady ? uz.lobby.ready : uz.lobby.notReady}
+    <div className="rm-lobby__tile">
+      <Avatar imageUrl={player.avatarUrl} name={player.displayName} ring={player.isHost ? 'host' : isMe ? 'you' : 'none'} />
+      <span className="rm-lobby__tile-name">
+        {player.displayName}
+        {isMe && <span className="rm-lobby__tile-you"> ({uz.lobby.you})</span>}
       </span>
+      <div className="rm-lobby__tile-badges">
+        {player.isHost && <Badge variant="host">{uz.lobby.host}</Badge>}
+        <Badge variant={player.isReady ? 'ready' : 'neutral'}>{player.isReady ? uz.lobby.ready : uz.lobby.notReady}</Badge>
+      </div>
+    </div>
+  );
+}
+
+function EmptySlotTile() {
+  return (
+    <div className="rm-lobby__tile rm-lobby__tile--empty">
+      <span className="rm-lobby__empty-avatar" aria-hidden="true" />
+      <span className="rm-lobby__tile-name rm-lobby__tile-name--empty">{uz.lobby.emptySlot}</span>
     </div>
   );
 }
 
 /**
- * Lobby screen (F2.1) — renders the real roster from `lobbyStore.players`
- * (backend commit 769618e / OD-055). `myIsReady`/`myIsHost` (and therefore
- * the Ready toggle label and Start button's gate) are derived entirely from
- * the roster entry matching `myPlayerId`, refreshed on every lobby realtime
- * event via a debounced snapshot refetch — see `lobbyStore.ts`. `App.tsx`
- * swaps this screen out for `GameStartedScreen` once `currentPhase` leaves
- * `LOBBY`.
+ * Lobby screen (F2.1, redesigned F7a) — renders the real roster from
+ * `lobbyStore.players` (backend commit 769618e / OD-055). `myIsReady`/
+ * `myIsHost` (and therefore the Ready toggle label and Start button's
+ * gate) are derived entirely from the roster entry matching `myPlayerId`,
+ * refreshed on every lobby realtime event via a debounced snapshot
+ * refetch — see `lobbyStore.ts`. `App.tsx` swaps this screen out for
+ * `GameStartedScreen` once `currentPhase` leaves `LOBBY`.
  */
 function LobbyScreen() {
   const socketStatus = useSocketStore((s) => s.status);
@@ -212,68 +213,94 @@ function LobbyScreen() {
     }
   };
 
+  const handleShare = async () => {
+    if (!lobby.code) return;
+    try {
+      if (navigator.share) {
+        await navigator.share({ text: lobby.code });
+      } else {
+        await handleCopyCode();
+      }
+    } catch {
+      // User cancelled the share sheet, or it's unavailable — the code is
+      // still visible on screen either way.
+    }
+  };
+
   const gate = canStartGame({
     myIsHost: lobby.myIsHost,
     playerCount: lobby.playerCount,
     gameStatus: lobby.gameStatus,
   });
 
-  return (
-    <div className="mafia-screen">
-      <h1>{uz.lobby.title}</h1>
+  const emptySlots = Math.max(0, (lobby.maxPlayers ?? 0) - lobby.playerCount);
+  const progressPct = lobby.maxPlayers ? Math.min(100, (lobby.playerCount / lobby.maxPlayers) * 100) : 0;
 
-      {socketStatus === 'disconnected' && (
-        <p className="mafia-banner mafia-banner--warn">{uz.lobby.disconnectedBanner}</p>
-      )}
-      {socketStatus === 'connecting' && lobby.snapshotLoading && (
-        <p className="mafia-banner mafia-banner--warn">{uz.lobby.reconnectedRefreshing}</p>
-      )}
-
-      <div className="mafia-card">
-        <span className="mafia-hint">{uz.lobby.codeLabel}</span>
-        <div className="mafia-code">
-          <span>{lobby.code ?? '—'}</span>
-          <button className="mafia-button mafia-button--secondary" onClick={() => void handleCopyCode()}>
-            {copied ? uz.lobby.copied : uz.lobby.copyCode}
-          </button>
-        </div>
-        <p className="mafia-hint">{uz.lobby.players(lobby.playerCount, lobby.maxPlayers ?? 0)}</p>
-      </div>
-
-      <div className="mafia-card">
-        {lobby.players === null ? (
-          <p className="mafia-hint">{uz.lobby.loadingRoster}</p>
-        ) : (
-          lobby.players.map((player) => (
-            <PlayerRow key={player.playerId} player={player} isMe={player.playerId === lobby.myPlayerId} />
-          ))
-        )}
-      </div>
-
-      <div className="mafia-row">
-        <button className="mafia-button mafia-button--secondary" onClick={() => void handleToggleReady()} disabled={readyBusy}>
-          {readyBusy ? '…' : lobby.myIsReady ? uz.lobby.notReadyButton : uz.lobby.readyButton}
-        </button>
-        <button className="mafia-button mafia-button--secondary" onClick={() => void handleLeave()} disabled={leaveBusy}>
-          {leaveBusy ? uz.lobby.leaving : uz.lobby.leaveButton}
-        </button>
-      </div>
-
-      {lobby.myIsHost && (
-        <div>
-          <button className="mafia-button" onClick={() => void handleStart()} disabled={!gate.enabled || startBusy}>
-            {startBusy ? uz.lobby.starting : uz.lobby.startButton}
-          </button>
+  const footer = (
+    <>
+      {lobby.myIsHost ? (
+        <>
+          <Button onClick={() => void handleStart()} loading={startBusy} disabled={!gate.enabled}>
+            {uz.lobby.startButton}
+          </Button>
           {gate.reasonKey && (
-            <p className="mafia-hint">{START_REASON_TEXT[gate.reasonKey]({ playerCount: lobby.playerCount })}</p>
+            <p className="rm-lobby__start-reason">{START_REASON_TEXT[gate.reasonKey]({ playerCount: lobby.playerCount })}</p>
           )}
-        </div>
+        </>
+      ) : (
+        <Button onClick={() => void handleToggleReady()} loading={readyBusy}>
+          {lobby.myIsReady ? uz.lobby.notReadyButton : uz.lobby.readyButton}
+        </Button>
+      )}
+      <Button variant="danger" onClick={() => void handleLeave()} loading={leaveBusy}>
+        {uz.lobby.leaveButton}
+      </Button>
+    </>
+  );
+
+  return (
+    <Screen title={uz.lobby.title} footer={footer}>
+      {socketStatus === 'disconnected' && <Banner variant="warn">{uz.lobby.disconnectedBanner}</Banner>}
+      {socketStatus === 'connecting' && lobby.snapshotLoading && (
+        <Banner variant="warn">{uz.lobby.reconnectedRefreshing}</Banner>
       )}
 
-      {actionError && <p className="mafia-banner mafia-banner--error">{actionError}</p>}
+      <Card>
+        <span className="rm-lobby__code-label">{uz.lobby.codeLabel}</span>
+        <div className="rm-lobby__code">{lobby.code ?? '—'}</div>
+        <div className="rm-lobby__code-actions">
+          <Button variant="secondary" fullWidth onClick={() => void handleCopyCode()}>
+            {copied ? uz.lobby.copied : uz.lobby.copyCode}
+          </Button>
+          <Button variant="secondary" fullWidth onClick={() => void handleShare()}>
+            {uz.lobby.shareLink}
+          </Button>
+        </div>
+        <div className="rm-lobby__progress">
+          <div className="rm-lobby__progress-bar">
+            <div className="rm-lobby__progress-fill" style={{ width: `${progressPct}%` }} />
+          </div>
+          <span className="rm-lobby__progress-label">{uz.lobby.players(lobby.playerCount, lobby.maxPlayers ?? 0)}</span>
+        </div>
+      </Card>
+
+      <Card>
+        {lobby.players === null ? (
+          <p className="rm-lobby__hint">{uz.lobby.loadingRoster}</p>
+        ) : (
+          <div className="rm-lobby__grid">
+            {lobby.players.map((player) => (
+              <PlayerTile key={player.playerId} player={player} isMe={player.playerId === lobby.myPlayerId} />
+            ))}
+            {Array.from({ length: emptySlots }, (_, i) => <EmptySlotTile key={i} />)}
+          </div>
+        )}
+      </Card>
+
+      {actionError && <Banner variant="error">{actionError}</Banner>}
 
       {isDevMode(window.location.search) && lobby.code && <DevBotsPanel code={lobby.code} />}
-    </div>
+    </Screen>
   );
 }
 
