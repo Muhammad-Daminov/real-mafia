@@ -1,0 +1,20 @@
+/**
+ * F7a: small layout/text utilities shared by every screen alongside the
+ * `ui/` components — a one-off muted caption or a row of flex-equal
+ * children doesn't need a dedicated component, but it should still read
+ * off the token scale rather than a hardcoded color/size.
+ */
+.rm-hint {
+  margin: 0;
+  color: var(--rm-text-2);
+  font-size: var(--rm-caption-size);
+}
+
+.rm-row {
+  display: flex;
+  gap: var(--rm-space-2);
+}
+
+.rm-row > * {
+  flex: 1;
+}

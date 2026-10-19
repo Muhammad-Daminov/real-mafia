@@ -14,6 +14,23 @@ export function teamLabel(team: Team | string): string {
   return (uz.teams as Record<string, string>)[team] ?? team;
 }
 
+/** F7a: the team-color accent (`styles/tokens.css`'s `--rm-team-*`) behind
+ * RoleReveal/GameEnd's role cards — same safe-fallback shape as
+ * `teamLabel`/`phaseLabel`, a neutral gray for anything the frontend
+ * doesn't recognize rather than guessing a team's color. */
+export function teamColorVar(team: Team | string): string {
+  switch (team) {
+    case 'TOWN':
+      return 'var(--rm-team-town)';
+    case 'MAFIA':
+      return 'var(--rm-team-mafia)';
+    case 'NEUTRAL':
+      return 'var(--rm-team-neutral)';
+    default:
+      return 'var(--rm-text-2)';
+  }
+}
+
 /** Safe fallback for a role code the frontend doesn't recognize — same
  * reasoning as `phaseLabel`. Pre-GAME_OVER this only ever renders the
  * caller's own role (§ROLE_REVEAL scope: never show other players' roles

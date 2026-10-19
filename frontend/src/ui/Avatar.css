@@ -1,0 +1,31 @@
+.rm-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--rm-surface-2);
+  flex-shrink: 0;
+  box-sizing: border-box;
+  position: relative;
+}
+
+.rm-avatar--ring-host {
+  box-shadow: 0 0 0 2px var(--rm-bg), 0 0 0 4px var(--rm-warn);
+}
+
+.rm-avatar--ring-you {
+  box-shadow: 0 0 0 2px var(--rm-bg), 0 0 0 4px var(--rm-accent-strong);
+}
+
+.rm-avatar__image {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
+
+.rm-avatar__initials {
+  font-weight: 700;
+  color: var(--rm-text-1);
+}

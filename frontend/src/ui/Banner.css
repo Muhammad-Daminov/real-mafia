@@ -1,0 +1,21 @@
+.rm-banner {
+  margin: 0;
+  border-radius: var(--rm-radius-md);
+  padding: var(--rm-space-3) var(--rm-space-4);
+  font: var(--rm-body-weight) var(--rm-body-size)/var(--rm-body-line) var(--rm-font-family);
+}
+
+.rm-banner--info {
+  background: var(--rm-surface-2);
+  color: var(--rm-text-2);
+}
+
+.rm-banner--warn {
+  background: rgba(234, 179, 8, 0.15);
+  color: var(--rm-warn);
+}
+
+.rm-banner--error {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--rm-danger-strong);
+}

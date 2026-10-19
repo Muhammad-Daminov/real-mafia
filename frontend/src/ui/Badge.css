@@ -1,0 +1,31 @@
+.rm-badge {
+  display: inline-flex;
+  align-items: center;
+  font: var(--rm-caption-weight) var(--rm-caption-size)/1 var(--rm-font-family);
+  font-weight: 700;
+  border-radius: var(--rm-radius-full);
+  padding: var(--rm-space-1) var(--rm-space-3);
+  background: var(--rm-surface-2);
+  color: var(--rm-text-2);
+  white-space: nowrap;
+}
+
+.rm-badge--ready {
+  background: rgba(34, 197, 94, 0.18);
+  color: #4ade80;
+}
+
+.rm-badge--host {
+  background: rgba(234, 179, 8, 0.18);
+  color: var(--rm-warn);
+}
+
+.rm-badge--alive {
+  background: rgba(34, 197, 94, 0.18);
+  color: #4ade80;
+}
+
+.rm-badge--dead {
+  background: rgba(239, 68, 68, 0.18);
+  color: var(--rm-danger-strong);
+}

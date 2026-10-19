@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { phaseLabel, roleInfo, teamLabel } from './labels';
+import { phaseLabel, roleInfo, teamColorVar, teamLabel } from './labels';
 import { uz } from '../messages/uz';
 
 describe('phaseLabel', () => {
@@ -65,5 +65,19 @@ describe('teamLabel', () => {
 
   it('falls back to the raw value for an unrecognized team', () => {
     expect(teamLabel('SOME_FUTURE_TEAM')).toBe('SOME_FUTURE_TEAM');
+  });
+});
+
+describe('teamColorVar (F7a)', () => {
+  it('returns a distinct CSS color var for every known team', () => {
+    const colors = ['TOWN', 'MAFIA', 'NEUTRAL'].map((team) => teamColorVar(team));
+    expect(new Set(colors).size).toBe(3);
+    for (const color of colors) {
+      expect(color).toMatch(/^var\(--rm-/);
+    }
+  });
+
+  it('falls back to a neutral text color for an unrecognized team, never crashing', () => {
+    expect(teamColorVar('SOME_FUTURE_TEAM')).toBe('var(--rm-text-2)');
   });
 });

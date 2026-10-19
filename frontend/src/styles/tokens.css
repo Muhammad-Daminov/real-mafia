@@ -1,0 +1,126 @@
+/**
+ * F7a: REAL MAFIA design tokens — the single source for color, spacing,
+ * radii, shadows, type scale, and motion. A dark "mafia noir" look is a
+ * deliberate brand choice (not adapted from Telegram's light/dark
+ * `--tg-theme-*` vars) — the whole point is one consistent night-table
+ * aesthetic regardless of the host's theme setting. Safe-area insets DO
+ * read Telegram's own viewport vars (`telegram/theme.ts`'s
+ * `bindTelegramViewport`), falling back to the standard `env()` insets for
+ * plain-browser/PWA contexts, then to 0 if neither is present.
+ *
+ * Phase themes (`ui/Screen.tsx`'s `theme` prop) flip a handful of these
+ * vars via `[data-theme="night"|"day"]` — `neutral` (Home/Lobby/
+ * RoleReveal/GameEnd) is the baseline below and needs no override block.
+ */
+:root {
+  /* Surfaces */
+  --rm-bg: #0a0a0f;
+  --rm-surface-1: #15151d;
+  --rm-surface-2: #1d1d27;
+  --rm-surface-raised: #26262f;
+  --rm-border: rgba(255, 255, 255, 0.08);
+  --rm-border-strong: rgba(255, 255, 255, 0.16);
+  --rm-theme-glow: transparent;
+
+  /* Text */
+  --rm-text-1: #f3f3f6;
+  --rm-text-2: #a8a8b5;
+  --rm-text-3: #6f6f7c;
+  --rm-text-on-accent: #0a0a0f;
+
+  /* Accent + semantic (the one strong accent is a deep crimson — classic
+   * "mafia" red, used sparingly: primary actions, the accent glow, danger
+   * leans on a separate hue so the two are never confused). */
+  --rm-accent: #c23b45;
+  --rm-accent-strong: #e2505b;
+  --rm-danger: #ef4444;
+  --rm-danger-strong: #f87171;
+  --rm-success: #22c55e;
+  --rm-warn: #eab308;
+
+  /* Team colors (RoleReveal/GameEnd role-reveal list) */
+  --rm-team-town: #3fa96a;
+  --rm-team-mafia: #e2505b;
+  --rm-team-neutral: #a07be0;
+
+  /* Spacing scale */
+  --rm-space-1: 4px;
+  --rm-space-2: 8px;
+  --rm-space-3: 12px;
+  --rm-space-4: 16px;
+  --rm-space-6: 24px;
+
+  /* Radii */
+  --rm-radius-sm: 8px;
+  --rm-radius-md: 12px;
+  --rm-radius-lg: 20px;
+  --rm-radius-full: 999px;
+
+  /* Shadows */
+  --rm-shadow-card: 0 2px 10px rgba(0, 0, 0, 0.45);
+  --rm-shadow-raised: 0 10px 28px rgba(0, 0, 0, 0.55);
+
+  /* Type scale — system font stack, no webfont download (fast, offline-safe
+   * inside Telegram's webview). */
+  --rm-font-family:
+    system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --rm-title-size: 26px;
+  --rm-title-weight: 800;
+  --rm-title-line: 1.2;
+  --rm-heading-size: 17px;
+  --rm-heading-weight: 700;
+  --rm-heading-line: 1.3;
+  --rm-body-size: 15px;
+  --rm-body-weight: 400;
+  --rm-body-line: 1.5;
+  --rm-caption-size: 13px;
+  --rm-caption-weight: 500;
+  --rm-caption-line: 1.4;
+
+  /* Motion — under the task's 600ms reveal ceiling; respects
+   * prefers-reduced-motion globally, see the media block below. */
+  --rm-duration-fast: 150ms;
+  --rm-duration-base: 220ms;
+  --rm-duration-reveal: 520ms;
+  --rm-ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* Safe area — Telegram's own viewport inset vars win when bound
+   * (`bindTelegramViewport`), else the platform's own `env()` insets, else
+   * 0. `content-safe-area` additionally excludes Telegram's own chrome
+   * (back button, header) — used for the fixed bottom action bar, since
+   * that's the one area a bottom sheet/Telegram UI could get under. */
+  --rm-safe-top: var(--tg-viewport-safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --rm-safe-bottom: var(--tg-viewport-content-safe-area-inset-bottom, var(--tg-viewport-safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)));
+  --rm-safe-left: var(--tg-viewport-safe-area-inset-left, env(safe-area-inset-left, 0px));
+  --rm-safe-right: var(--tg-viewport-safe-area-inset-right, env(safe-area-inset-right, 0px));
+}
+
+/* NIGHT phase (`NightScreen.tsx`) — deep blue/indigo. */
+[data-theme='night'] {
+  --rm-bg: #070a14;
+  --rm-surface-1: #0f1420;
+  --rm-surface-2: #161c2c;
+  --rm-surface-raised: #1d2538;
+  --rm-accent: #5b7fdb;
+  --rm-accent-strong: #7d9ce8;
+  --rm-theme-glow: rgba(91, 127, 219, 0.14);
+}
+
+/* Day phases (`DayScreen.tsx`) — warm amber. */
+[data-theme='day'] {
+  --rm-bg: #120e08;
+  --rm-surface-1: #1b140c;
+  --rm-surface-2: #241b10;
+  --rm-surface-raised: #2d2214;
+  --rm-accent: #d98e2b;
+  --rm-accent-strong: #f0a93c;
+  --rm-theme-glow: rgba(217, 142, 43, 0.14);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --rm-duration-fast: 0ms;
+    --rm-duration-base: 0ms;
+    --rm-duration-reveal: 0ms;
+  }
+}

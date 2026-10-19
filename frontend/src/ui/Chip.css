@@ -1,0 +1,43 @@
+.rm-chip {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--rm-space-2);
+  min-height: 44px;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--rm-border-strong);
+  background: var(--rm-surface-2);
+  color: var(--rm-text-1);
+  border-radius: var(--rm-radius-md);
+  padding: var(--rm-space-2) var(--rm-space-4);
+  font: var(--rm-body-weight) var(--rm-body-size)/var(--rm-body-line) var(--rm-font-family);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--rm-duration-fast) var(--rm-ease), border-color var(--rm-duration-fast) var(--rm-ease);
+}
+
+span.rm-chip {
+  width: auto;
+  min-height: 0;
+  cursor: default;
+  font: var(--rm-caption-weight) var(--rm-caption-size)/1 var(--rm-font-family);
+  padding: var(--rm-space-1) var(--rm-space-3);
+  border-radius: var(--rm-radius-full);
+}
+
+button.rm-chip:focus-visible {
+  outline: 2px solid var(--rm-accent-strong);
+  outline-offset: 2px;
+}
+
+button.rm-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.rm-chip--selected {
+  border-color: var(--rm-accent);
+  background: color-mix(in srgb, var(--rm-accent) 22%, var(--rm-surface-2));
+}
