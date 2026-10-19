@@ -2,9 +2,11 @@ import { Module } from '@nestjs/common';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { RoomsController } from './rooms.controller';
 import { RoomsService } from './rooms.service';
+import { StaleLobbyCleanupService } from './stale-lobby-cleanup.service';
 import { CommandRequestService } from '../common/command-requests/command-request.service';
 import { GameEngineModule } from '../game-engine/game-engine.module';
 import { RealtimeModule } from '../common/realtime/realtime.module';
+import { SchedulingModule } from '../common/scheduling/scheduling.module';
 import { commandThrottlerOptions } from '../common/config/throttler';
 import { UserThrottlerGuard } from '../common/guards/user-throttler.guard';
 
@@ -13,9 +15,16 @@ import { UserThrottlerGuard } from '../common/guards/user-throttler.guard';
   // its own registration (same per-module shape `AuthModule` already uses
   // for its stricter `/auth/telegram` limit) so `RoomsController`'s
   // `UserThrottlerGuard` has `THROTTLER_OPTIONS`/storage to inject.
-  imports: [GameEngineModule, RealtimeModule, ThrottlerModule.forRoot(commandThrottlerOptions())],
+  // `SchedulingModule` gives `StaleLobbyCleanupService` the shared
+  // `SchedulerService` worker (own task kind, see that service's docstring).
+  imports: [
+    GameEngineModule,
+    RealtimeModule,
+    SchedulingModule,
+    ThrottlerModule.forRoot(commandThrottlerOptions()),
+  ],
   controllers: [RoomsController],
-  providers: [RoomsService, CommandRequestService, UserThrottlerGuard],
+  providers: [RoomsService, CommandRequestService, UserThrottlerGuard, StaleLobbyCleanupService],
   // B-D1: DevToolsModule injects RoomsService to join synthetic bot players
   // through the real join/ready path (fill-bots), rather than writing to
   // game_players directly.

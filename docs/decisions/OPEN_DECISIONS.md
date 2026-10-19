@@ -1509,6 +1509,13 @@ Context: B-H1 adds two new throttling mechanisms — the `@nestjs/throttler` gua
 
 **Why this is an acceptable default for now, and what would need to change later:** horizontal scaling of the API process isn't built or decided yet (OD-012 is itself open/non-blocking), so there is no current deployment shape where this gap is actually reachable. If/when the API scales beyond one instance, the fix is a shared backing store — `@nestjs/throttler` supports a Redis storage adapter as a drop-in replacement for `ThrottlerStorageService`, and the socket cap would need to move its count into Redis (the same instance already required at boot per OD-063) keyed by user id, incrementing/decrementing on connect/disconnect. Neither change is needed while OD-012 remains unresolved in the single-instance direction.
 
+### OD-065 — "RUNNING Game With Every Human Player Gone" Detection Is Currently Inert · OPEN (not blocking — stated default in force)
+Context: B-H1's stale-lobby cleanup task (item 4) explicitly scoped a RUNNING game where every human player has disconnected as "out of scope: only log a warning count, do not act." `StaleLobbyCleanupService.logAbandonedRunningGames` implements exactly that — it counts RUNNING games where every non-bot player's `connectionStatus` is `DISCONNECTED` and logs a warning if the count is nonzero, but takes no action (no cancel, no notification, no state change).
+
+**Decision: ship the read-only warning as instructed, flag that it is currently inert in practice.** Nothing in the codebase today writes `GamePlayer.connectionStatus` to `DISCONNECTED` — `RealtimeGateway`'s socket disconnect handler (`src/common/realtime/realtime.gateway.ts`) only maintains the in-memory `connectionsByUser` counter added by this same slice; it does not persist connection state to the `GamePlayer` row. So `logAbandonedRunningGames`'s count is always 0 today, not because no game is ever abandoned, but because the signal it reads is never written. This OD exists to make that gap visible rather than have a "warning log that can never fire" look like working abandonment detection.
+
+**Why this is the right scope for a hardening slice, not a reason to go further:** writing `connectionStatus` on every socket connect/disconnect is a realtime-layer behavior change (touches the gateway's hot path, and raises its own questions — e.g. does a brief reconnect blip count as "gone"? what debounce?) well beyond "pre-launch hardening, no new features, no public contract changes." The task's own scoping ("only log a warning count, do not act") anticipated exactly this and asked for the count, not the wiring behind it. Resolving this OD later means either (a) having some other code path start persisting `connectionStatus`, at which point this warning starts working for free, or (b) explicitly deciding RUNNING-game abandonment detection needs its own designed signal (e.g. last-seen timestamp) rather than piggybacking on socket connection state.
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
 None. Every previously blocking decision is resolved (see the addendum above).
@@ -1522,7 +1529,7 @@ None. Every previously blocking decision is resolved (see the addendum above).
 | OD-021 | Re-join after leaving | Phase 4: Lobby | Prohibited |
 | OD-026 | Early phase advance | Phase: Engine | Off |
 | OD-028 | Changing a submitted action | Phase 6: Roles/actions | Allowed, update-in-place |
-| OD-029 | Room expiry | Phase 10/11: Recovery | SHOULD ship |
+| OD-029 | Room expiry | Phase 10/11: Recovery | SHOULD ship — LOBBY-room idle expiry built (B-H1, `StaleLobbyCleanupService`); RUNNING-game abandonment is read-only/inert (OD-065) |
 | OD-031 | Max simultaneous night deaths cap | Phase 6: Roles/actions | 3 (§12.4) |
 | OD-032 | Staff authentication mechanism | Phase 16: Admin | Local credentials + IP allowlist |
 | OD-033 | Financial-record retention jurisdiction | Release gate | — |
@@ -1531,6 +1538,7 @@ None. Every previously blocking decision is resolved (see the addendum above).
 | OD-062 | `/start` deep-link/referral payload + persisted `telegram_updates` table | Phase 20/26 (deep links) / Phase 25 (Stars webhooks) | Not built — generic greeting for any `/start <payload>`; in-memory bounded dedupe stands in |
 | OD-063 | `REDIS_URL` required at boot (B-H1) | Any deployment | Required always — Postgres fallback stays runtime-only, not a "never configure Redis" option |
 | OD-064 | Rate limiting / socket cap storage (B-H1) | Horizontal scaling of the API process (OD-012) | In-memory, single-instance only |
+| OD-065 | RUNNING-game abandonment detection (B-H1) | Any slice that wires up real `connectionStatus` writes | Warning-only, currently inert — nothing writes `connectionStatus` yet |
 
 ## Notes
 
@@ -1543,4 +1551,4 @@ None. Every previously blocking decision is resolved (see the addendum above).
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
 - Total: 50 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
   OD-037 through OD-060 recorded 2026-09-26/27/28/2026-10-05/2026-10-17), 0 open+blocking,
-  14 open+non-blocking (64 IDs, OD-001 through OD-064).
+  15 open+non-blocking (65 IDs, OD-001 through OD-065).
