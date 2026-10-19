@@ -1,0 +1,78 @@
+.rm-reveal {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--rm-space-4);
+  text-align: center;
+}
+
+.rm-reveal__label {
+  margin: 0;
+  color: var(--rm-text-2);
+  font: var(--rm-caption-weight) var(--rm-caption-size)/1 var(--rm-font-family);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+.rm-reveal__card {
+  align-items: center;
+  width: 100%;
+  border-top: 3px solid var(--rm-reveal-accent, var(--rm-accent));
+  box-shadow: 0 0 40px -10px var(--rm-reveal-accent, var(--rm-accent)), var(--rm-shadow-raised);
+  animation: rm-reveal-in var(--rm-duration-reveal) var(--rm-ease) both;
+}
+
+.rm-reveal__role-name {
+  margin: 0;
+  font: var(--rm-title-weight) 28px/var(--rm-title-line) var(--rm-font-family);
+}
+
+.rm-reveal__ability {
+  margin: 0;
+  color: var(--rm-text-2);
+  font-size: var(--rm-body-size);
+}
+
+.rm-reveal__teammates {
+  width: 100%;
+  border-top: 1px solid var(--rm-border);
+  padding-top: var(--rm-space-3);
+}
+
+.rm-reveal__teammates-label {
+  margin: 0 0 var(--rm-space-2);
+  color: var(--rm-text-2);
+  font-size: var(--rm-caption-size);
+}
+
+.rm-reveal__teammates-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--rm-space-3);
+}
+
+.rm-reveal__teammate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--rm-space-1);
+}
+
+.rm-reveal__teammate-name {
+  font-size: var(--rm-caption-size);
+  color: var(--rm-text-2);
+}
+
+@keyframes rm-reveal-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
