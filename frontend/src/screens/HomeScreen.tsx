@@ -5,11 +5,13 @@ import { useLobbyStore } from '../store/lobbyStore';
 import { connectSocket } from '../socket/socketClient';
 import { createRoom, joinRoom } from '../api/rooms';
 import { describeRoomError } from '../errors/roomErrorMessages';
+import { Screen, Card, Button, Banner } from '../ui';
+import './HomeScreen.css';
 
 /**
- * Entry flow (F2): "Create room" and "Join by code", both lead to the
- * lobby. Room config (maxPlayers/rulesetMode) has no UI here — same
- * debug-default reasoning as the old debug screen's Create button
+ * Entry flow (F2, redesigned F7a): "Create room" and "Join by code", both
+ * lead to the lobby. Room config (maxPlayers/rulesetMode) has no UI here —
+ * same debug-default reasoning as the old debug screen's Create button
  * (`POST /rooms` requires both fields with no sensible single default) —
  * a room-config screen is out of this slice's scope.
  */
@@ -70,40 +72,55 @@ function HomeScreen() {
   };
 
   return (
-    <div className="mafia-screen">
-      <h1>{uz.home.title}</h1>
-
-      {notice && <p className="mafia-banner mafia-banner--warn">{notice}</p>}
-
-      <div className="mafia-card">
-        <button className="mafia-button" onClick={() => void handleCreate()} disabled={!canAct || creating}>
-          {creating ? uz.home.creating : uz.home.createRoom}
-        </button>
+    <Screen>
+      <div className="rm-home__hero">
+        <div className="rm-home__logo" aria-hidden="true">
+          🎭
+        </div>
+        <h1 className="rm-home__title">{uz.home.title}</h1>
+        <p className="rm-home__tagline">{uz.home.tagline}</p>
       </div>
 
-      <div className="mafia-card">
+      {notice && <Banner variant="warn">{notice}</Banner>}
+
+      <Card>
+        <Button onClick={() => void handleCreate()} loading={creating} disabled={!canAct}>
+          {uz.home.createRoom}
+        </Button>
+        <p className="rm-home__helper">{uz.home.createHelper}</p>
+      </Card>
+
+      <Card>
+        <p className="rm-home__section-title">{uz.home.joinSectionTitle}</p>
         <input
-          className="mafia-input"
+          className="rm-home__code-input"
           value={codeInput}
           onChange={(e) => setCodeInput(e.target.value)}
           placeholder={uz.home.codePlaceholder}
+          maxLength={6}
+          autoCapitalize="characters"
+          autoCorrect="off"
+          spellCheck={false}
           disabled={!canAct}
+          aria-label={uz.home.codePlaceholder}
         />
-        <button
-          className="mafia-button mafia-button--secondary"
+        <Button
+          variant="secondary"
           onClick={() => void handleJoin()}
-          disabled={!canAct || joining || !codeInput.trim()}
+          loading={joining}
+          disabled={!canAct || !codeInput.trim()}
         >
-          {joining ? uz.home.joining : uz.home.joinByCode}
-        </button>
-      </div>
+          {uz.home.joinByCode}
+        </Button>
+        <p className="rm-home__helper">{uz.home.joinHelper}</p>
+      </Card>
 
-      {error && <p className="mafia-banner mafia-banner--error">{error}</p>}
+      {error && <Banner variant="error">{error}</Banner>}
 
-      <a className="mafia-hint" href="?debug=1">
+      <a className="rm-home__debug-link" href="?debug=1">
         {uz.home.debugLink}
       </a>
-    </div>
+    </Screen>
   );
 }
 

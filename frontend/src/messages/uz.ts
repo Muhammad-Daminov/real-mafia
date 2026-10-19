@@ -7,12 +7,16 @@
 export const uz = {
   home: {
     title: 'REAL MAFIA',
+    tagline: 'Do‘stlar bilan yolg‘on va shubha o‘yini',
     createRoom: 'Xona yaratish',
-    creating: 'Yaratilmoqda…',
-    joinByCode: 'Kod bilan qo‘shilish',
-    codePlaceholder: 'Xona kodi',
-    joining: 'Qo‘shilinmoqda…',
+    createHelper: 'Yangi xona oching va do‘stlaringizni taklif qiling',
+    joinSectionTitle: 'Kod bilan qo‘shilish',
+    joinByCode: 'Qo‘shilish',
+    codePlaceholder: 'KOD',
+    joinHelper: 'Do‘stingiz yuborgan 6 xonali kodni kiriting',
     debugLink: 'Debug ekran',
+    creating: 'Yaratilmoqda…',
+    joining: 'Qo‘shilinmoqda…',
   },
   lobby: {
     title: 'Kutish xonasi',
