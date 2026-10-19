@@ -108,6 +108,12 @@ export class SchedulerService implements OnApplicationBootstrap, OnModuleDestroy
   private readonly workerId = randomUUID();
   private timer: NodeJS.Timeout | null = null;
   private polling = false;
+  /** B-H1: the currently-running `pollOnce()` call, if any — set from
+   * `start()`'s own interval tick so `onModuleDestroy` can await it
+   * (graceful shutdown: let a task already claimed finish and commit
+   * `complete`/`fail` cleanly, rather than abandoning it mid-write to the
+   * 30s lease-expiry path). `null` whenever no poll is in flight. */
+  private inFlightPoll: Promise<void> | null = null;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -125,8 +131,22 @@ export class SchedulerService implements OnApplicationBootstrap, OnModuleDestroy
     this.start();
   }
 
-  onModuleDestroy(): void {
+  /**
+   * B-H1: `stop()` first, so no *new* poll tick starts — then await
+   * whatever `pollOnce()` call is already in flight, so a task this
+   * worker already claimed gets to finish and call `complete()`/`fail()`
+   * before the process (and its DB connection, `PrismaService`'s own
+   * `onModuleDestroy`, which Nest runs after this one) actually goes away.
+   * Nothing is lost either way — an abandoned LEASED task is always safely
+   * reclaimable once its lease expires (OD-043b/the "crashed worker" test
+   * in `scheduler.service.spec.ts`) — this just avoids the ~30s delay that
+   * would otherwise follow every single graceful restart.
+   */
+  async onModuleDestroy(): Promise<void> {
     this.stop();
+    if (this.inFlightPoll) {
+      await this.inFlightPoll;
+    }
   }
 
   registerHandler(kind: string, handler: TaskHandler): void {
@@ -141,7 +161,9 @@ export class SchedulerService implements OnApplicationBootstrap, OnModuleDestroy
       return;
     }
     this.timer = setInterval(() => {
-      void this.pollOnce();
+      this.inFlightPoll = this.pollOnce().finally(() => {
+        this.inFlightPoll = null;
+      });
     }, intervalMs);
     this.timer.unref?.();
   }

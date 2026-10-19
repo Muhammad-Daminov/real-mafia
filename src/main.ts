@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { httpCorsOptions } from './common/config/cors';
 import { formatEnvIssues, validateEnv } from './common/config/env-validation';
+import { requestLoggerMiddleware } from './common/logging/request-logger.middleware';
 
 /** B-H1: JSON/urlencoded body cap (task: "e.g. 100kb") — set explicitly via
  * `useBodyParser` rather than relying on body-parser's own default (which
@@ -67,6 +68,10 @@ export function configureApp(app: NestExpressApplication): void {
   // dependency-independent way to satisfy "disable x-powered-by" literally.
   app.disable('x-powered-by');
 
+  // B-H1: one log line per request, with a request id — never headers,
+  // body, or query string (see the middleware's own docstring).
+  app.use(requestLoggerMiddleware);
+
   // Mini App frontend origin allow-list (common/config/cors.ts) — the same
   // list the /game Socket.IO gateway's own `cors` option reads, so HTTP and
   // websocket origins can't drift apart.
@@ -90,6 +95,16 @@ export function configureApp(app: NestExpressApplication): void {
       transform: true,
     }),
   );
+
+  // B-H1: Render sends SIGTERM on restart/redeploy. Without this, Nest
+  // never listens for it at all — the process would be killed outright,
+  // mid-request and mid-scheduled-task, instead of letting each module's
+  // own `OnModuleDestroy`/`onApplicationShutdown` hook run first
+  // (`SchedulerService` stops polling and lets its current `pollOnce`
+  // finish; `PrismaService` disconnects; the HTTP/Socket.IO server stops
+  // accepting new connections and closes existing ones) — see those
+  // services' own docstrings for what "cleanly" means for each.
+  app.enableShutdownHooks();
 }
 
 async function bootstrap() {

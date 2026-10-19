@@ -70,4 +70,12 @@ describe('configureApp (B-H1: security headers, body limit)', () => {
     const body = { data: 'a'.repeat(150 * 1024) };
     await request(app.getHttpServer()).post('/test-echo').send(body).expect(413);
   });
+
+  it('echoes a distinct X-Request-Id on every response', async () => {
+    const first = await request(app.getHttpServer()).get('/health');
+    const second = await request(app.getHttpServer()).get('/health');
+    expect(first.headers['x-request-id']).toBeDefined();
+    expect(second.headers['x-request-id']).toBeDefined();
+    expect(first.headers['x-request-id']).not.toBe(second.headers['x-request-id']);
+  });
 });

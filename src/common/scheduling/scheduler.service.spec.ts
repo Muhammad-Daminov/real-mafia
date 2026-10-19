@@ -339,6 +339,51 @@ describe('SchedulerService (integration)', () => {
     });
   });
 
+  describe('onModuleDestroy (B-H1: graceful shutdown)', () => {
+    it('awaits an in-flight pollOnce before resolving, so an already-claimed task finishes and commits cleanly', async () => {
+      const scheduler = new SchedulerService(prisma);
+      let finishHandler: (() => void) | null = null;
+      const handlerStarted = new Promise<void>((resolveStarted) => {
+        scheduler.registerHandler(TEST_KIND, async () => {
+          resolveStarted();
+          await new Promise<void>((resolveFinish) => {
+            finishHandler = resolveFinish;
+          });
+        });
+      });
+
+      const taskId = await prisma.$transaction((tx) =>
+        scheduler.enqueue(tx, { kind: TEST_KIND, payload: {}, runAt: new Date(Date.now() - 1_000) }),
+      );
+      track(taskId);
+
+      scheduler.start(50); // fast interval — only this test's own timing depends on it
+      await handlerStarted; // pollOnce has claimed the task and is now mid-handler
+
+      let destroyResolved = false;
+      const destroyPromise = scheduler.onModuleDestroy().then(() => {
+        destroyResolved = true;
+      });
+
+      // The handler hasn't finished yet — onModuleDestroy must not resolve
+      // early and abandon the in-flight task.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(destroyResolved).toBe(false);
+
+      finishHandler!();
+      await destroyPromise;
+      expect(destroyResolved).toBe(true);
+
+      const task = await prisma.scheduledTask.findUniqueOrThrow({ where: { id: taskId } });
+      expect(task.status).toBe('DONE'); // completed cleanly, not left LEASED for the lease to expire
+    });
+
+    it('resolves immediately when no poll is in flight', async () => {
+      const scheduler = new SchedulerService(prisma);
+      await expect(scheduler.onModuleDestroy()).resolves.toBeUndefined();
+    });
+  });
+
   describe('backoffDelayMs (OD-043c)', () => {
     it('grows exponentially and is capped at 5 minutes', () => {
       // Strip jitter's effect by checking bounds rather than exact values.
