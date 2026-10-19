@@ -425,6 +425,16 @@ model ScheduledTask {
   /// column).
   @@index([status, runAt])
   @@index([status, leaseExpiresAt])
+  /// B-H1: `claim`'s query ALSO filters `kind IN (registeredKinds)`
+  /// (OD-057) — without `kind` in the index, that filter can only be
+  /// applied after the two indexes above have already narrowed by
+  /// status+timestamp, scanning every due row of every kind (not just the
+  /// one/two kinds this worker actually claims) once this table holds
+  /// more than a couple of kinds at real volume. Added alongside the
+  /// existing two rather than replacing them (CREATE INDEX only, no drop —
+  /// see the migration's own comment).
+  @@index([status, kind, runAt])
+  @@index([status, kind, leaseExpiresAt])
   @@map("scheduled_tasks")
 }
 
