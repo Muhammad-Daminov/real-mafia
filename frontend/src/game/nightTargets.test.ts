@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildTargetRows, canConfirmSelection, isAlivePlayer } from './nightTargets';
+import { buildTargetRows, canConfirmSelection, isAlivePlayer, toggleTargetSelection } from './nightTargets';
 import { primaryAbility } from './nightAbility';
 import type { RoomPlayerSummary } from '../api/rooms';
 
@@ -90,6 +90,32 @@ describe('canConfirmSelection', () => {
     expect(canConfirmSelection(ability, ['a'])).toBe(false);
     expect(canConfirmSelection(ability, ['a', 'b'])).toBe(true);
     expect(canConfirmSelection(ability, ['a', 'a'])).toBe(false);
+  });
+});
+
+describe('toggleTargetSelection (F7b)', () => {
+  it('selects a single-target id from empty', () => {
+    expect(toggleTargetSelection([], 'a', false)).toEqual(['a']);
+  });
+
+  it('replaces the previous single-target selection with a new tap', () => {
+    expect(toggleTargetSelection(['a'], 'b', false)).toEqual(['b']);
+  });
+
+  it('deselects an already-selected single-target id', () => {
+    expect(toggleTargetSelection(['a'], 'a', false)).toEqual([]);
+  });
+
+  it('pair-target: adds a second id without dropping the first', () => {
+    expect(toggleTargetSelection(['a'], 'b', true)).toEqual(['a', 'b']);
+  });
+
+  it('pair-target: deselects a currently-selected id', () => {
+    expect(toggleTargetSelection(['a', 'b'], 'a', true)).toEqual(['b']);
+  });
+
+  it('pair-target: a third tap slides the oldest pick out, keeping the two most recent', () => {
+    expect(toggleTargetSelection(['a', 'b'], 'c', true)).toEqual(['b', 'c']);
   });
 });
 

@@ -54,6 +54,24 @@ export function buildTargetRows(
   });
 }
 
+/**
+ * F7b: the target-grid tap handler's own selection-toggle rule, extracted
+ * out of `NightScreen.tsx` so it's testable without React (same reasoning
+ * as every other pure helper in this file). A second tap on an already-
+ * selected id deselects it; a pair-target ability (Journalist) keeps at
+ * most the two most recent picks, sliding the oldest one out once a third
+ * is tapped, rather than growing unbounded or silently ignoring the tap.
+ */
+export function toggleTargetSelection(current: string[], playerId: string, pairTarget: boolean): string[] {
+  if (current.includes(playerId)) {
+    return current.filter((id) => id !== playerId);
+  }
+  if (pairTarget) {
+    return current.length >= 2 ? [current[1]!, playerId] : [...current, playerId];
+  }
+  return [playerId];
+}
+
 /** A single-target ability needs exactly one selected id; Journalist's
  * pair-target ability needs exactly two distinct ones. */
 export function canConfirmSelection(ability: NightAbilitySpec, selected: string[]): boolean {
