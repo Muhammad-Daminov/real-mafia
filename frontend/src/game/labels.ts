@@ -31,6 +31,28 @@ export function teamColorVar(team: Team | string): string {
   }
 }
 
+/** F7b: `GameEndScreen`'s role-reveal list, grouped by team — TOWN/MAFIA/
+ * NEUTRAL in that fixed order (the backend's own `WinnerTeam`/`Team`
+ * enum order, not alphabetical or arrival order), with any team this
+ * frontend doesn't recognize appended last as its own group rather than
+ * dropped. Groups with no players are omitted entirely. */
+export function groupByTeam<T extends { team: Team | string }>(players: T[]): { team: string; players: T[] }[] {
+  const order: (Team | string)[] = ['TOWN', 'MAFIA', 'NEUTRAL'];
+  const byTeam = new Map<string, T[]>();
+  for (const player of players) {
+    const list = byTeam.get(player.team);
+    if (list) list.push(player);
+    else byTeam.set(player.team, [player]);
+  }
+
+  const knownGroups = order.filter((team) => byTeam.has(team)).map((team) => ({ team, players: byTeam.get(team)! }));
+  const unknownGroups = [...byTeam.keys()]
+    .filter((team) => !order.includes(team))
+    .map((team) => ({ team, players: byTeam.get(team)! }));
+
+  return [...knownGroups, ...unknownGroups];
+}
+
 /** Safe fallback for a role code the frontend doesn't recognize — same
  * reasoning as `phaseLabel`. Pre-GAME_OVER this only ever renders the
  * caller's own role (§ROLE_REVEAL scope: never show other players' roles

@@ -1,0 +1,31 @@
+.rm-end__banner {
+  border-top: 3px solid var(--rm-end-accent, var(--rm-accent));
+}
+
+.rm-end__banner--win {
+  animation: rm-end-win-glow 2.4s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rm-end__banner--win {
+    animation: none;
+  }
+}
+
+@keyframes rm-end-win-glow {
+  0% {
+    box-shadow: 0 0 0 0 var(--rm-end-accent, var(--rm-accent));
+  }
+  20% {
+    box-shadow: 0 0 36px 6px var(--rm-end-accent, var(--rm-accent));
+  }
+  100% {
+    box-shadow: var(--rm-shadow-raised);
+  }
+}
+
+.rm-end__team-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rm-space-1);
+}

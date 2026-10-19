@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { phaseLabel, roleInfo, teamColorVar, teamLabel } from './labels';
+import { groupByTeam, phaseLabel, roleInfo, teamColorVar, teamLabel } from './labels';
 import { uz } from '../messages/uz';
 
 describe('phaseLabel', () => {
@@ -79,5 +79,41 @@ describe('teamColorVar (F7a)', () => {
 
   it('falls back to a neutral text color for an unrecognized team, never crashing', () => {
     expect(teamColorVar('SOME_FUTURE_TEAM')).toBe('var(--rm-text-2)');
+  });
+});
+
+describe('groupByTeam (F7b)', () => {
+  it('groups in TOWN/MAFIA/NEUTRAL order regardless of input order', () => {
+    const players = [
+      { id: 'a', team: 'NEUTRAL' },
+      { id: 'b', team: 'TOWN' },
+      { id: 'c', team: 'MAFIA' },
+      { id: 'd', team: 'TOWN' },
+    ];
+    expect(groupByTeam(players)).toEqual([
+      { team: 'TOWN', players: [{ id: 'b', team: 'TOWN' }, { id: 'd', team: 'TOWN' }] },
+      { team: 'MAFIA', players: [{ id: 'c', team: 'MAFIA' }] },
+      { team: 'NEUTRAL', players: [{ id: 'a', team: 'NEUTRAL' }] },
+    ]);
+  });
+
+  it('omits a team with no players', () => {
+    const groups = groupByTeam([{ id: 'a', team: 'MAFIA' }]);
+    expect(groups).toEqual([{ team: 'MAFIA', players: [{ id: 'a', team: 'MAFIA' }] }]);
+  });
+
+  it('appends an unrecognized team as its own trailing group instead of dropping it', () => {
+    const groups = groupByTeam([
+      { id: 'a', team: 'TOWN' },
+      { id: 'b', team: 'SOME_FUTURE_TEAM' },
+    ]);
+    expect(groups).toEqual([
+      { team: 'TOWN', players: [{ id: 'a', team: 'TOWN' }] },
+      { team: 'SOME_FUTURE_TEAM', players: [{ id: 'b', team: 'SOME_FUTURE_TEAM' }] },
+    ]);
+  });
+
+  it('returns an empty array for an empty input', () => {
+    expect(groupByTeam([])).toEqual([]);
   });
 });
