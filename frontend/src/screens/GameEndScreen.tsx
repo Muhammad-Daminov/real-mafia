@@ -1,8 +1,9 @@
 import { uz } from '../messages/uz';
 import { useGameStore } from '../store/gameStore';
-import { teamLabel, roleInfo } from '../game/labels';
+import { teamColorVar, teamLabel, roleInfo } from '../game/labels';
 import { returnHome } from '../game/returnHome';
 import type { Team, WinnerTeam } from '../api/games';
+import { Screen, Card, Button, Badge, Avatar, Banner } from '../ui';
 
 /**
  * Pure outcome decision, extracted for testing (no RTL in this project —
@@ -37,45 +38,43 @@ function GameEndScreen() {
 
   const didWin = resolvePersonalOutcome(myTeam, gameResult?.winnerTeam ?? null);
 
-  return (
-    <div className="mafia-screen">
-      <h1>{uz.gameEnd.title}</h1>
+  const accent = gameResult?.winnerTeam ? teamColorVar(gameResult.winnerTeam) : undefined;
 
-      {!gameResult && <p className="mafia-banner mafia-banner--warn">{uz.gameEnd.resultUnavailable}</p>}
+  return (
+    <Screen title={uz.gameEnd.title} footer={<Button onClick={returnHome}>{uz.gameEnd.backHome}</Button>}>
+      {!gameResult && <Banner variant="warn">{uz.gameEnd.resultUnavailable}</Banner>}
 
       {gameResult && (
-        <div className="mafia-card">
+        <Card raised style={accent ? { borderTop: `3px solid ${accent}` } : undefined}>
           <p style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>
             {uz.gameEnd.winnerLine(teamLabel(gameResult.winnerTeam ?? 'DRAW'))}
           </p>
-          {didWin !== null && (
-            <span className={`mafia-badge ${didWin ? 'mafia-badge--ready' : ''}`}>
-              {didWin ? uz.gameEnd.youWon : uz.gameEnd.youLost}
-            </span>
-          )}
-        </div>
+          {didWin !== null && <Badge variant={didWin ? 'ready' : 'dead'}>{didWin ? uz.gameEnd.youWon : uz.gameEnd.youLost}</Badge>}
+        </Card>
       )}
 
       {gameResult?.players && (
-        <div className="mafia-card">
+        <Card>
           <p style={{ fontWeight: 700, margin: 0 }}>{uz.gameEnd.rolesTitle}</p>
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-            {gameResult.players.map((p) => (
-              <li key={p.playerId}>
+          {gameResult.players.map((p) => (
+            <div key={p.playerId} className="rm-row" style={{ alignItems: 'center' }}>
+              <Avatar name={p.displayName} size={32} ring={p.playerId === myPlayerId ? 'you' : 'none'} />
+              <span style={{ flex: 1 }}>
                 {p.displayName}
                 {p.playerId === myPlayerId ? ` ${uz.night.youMarker}` : ''}
-                {` — ${roleInfo(p.roleCode).name} (${teamLabel(p.team)})`}
-                {p.lifeStatus !== 'ALIVE' ? ` · ${uz.day.deadTag}` : ''}
-              </li>
-            ))}
-          </ul>
-        </div>
+                <br />
+                <span className="rm-hint">
+                  {roleInfo(p.roleCode).name} · {teamLabel(p.team)}
+                </span>
+              </span>
+              <Badge variant={p.lifeStatus === 'ALIVE' ? 'alive' : 'dead'}>
+                {p.lifeStatus === 'ALIVE' ? uz.gameEnd.aliveTag : uz.day.deadTag}
+              </Badge>
+            </div>
+          ))}
+        </Card>
       )}
-
-      <button className="mafia-button" onClick={returnHome}>
-        {uz.gameEnd.backHome}
-      </button>
-    </div>
+    </Screen>
   );
 }
 

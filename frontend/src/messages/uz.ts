@@ -136,7 +136,6 @@ export const uz = {
     reasonExcludedTeam: 'jamoangiz a’zosi',
     confirmButton: 'Tasdiqlash',
     resubmitButton: 'Qayta yuborish',
-    submitting: 'Yuborilmoqda…',
     submitted: 'Harakatingiz qabul qilindi.',
     rosterLoading: 'O‘yinchilar ro‘yxati yuklanmoqda…',
     rosterError: 'Ro‘yxatni yuklashda xatolik',
@@ -164,6 +163,7 @@ export const uz = {
     youWon: 'Siz g‘alaba qozondingiz!',
     youLost: 'Siz yutqazdingiz.',
     rolesTitle: 'Rollar',
+    aliveTag: 'tirik',
     backHome: 'Bosh sahifa',
   },
   nightResults: {

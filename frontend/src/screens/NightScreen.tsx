@@ -7,6 +7,7 @@ import { buildTargetRows, canConfirmSelection, submitSelectedTarget } from '../g
 import { describeNightActionError } from '../errors/nightActionErrorMessages';
 import type { LifeStatus, RoleCode } from '../api/games';
 import type { IneligibleReason } from '../game/targetEligibility';
+import { Screen, Card, Button, Badge, Chip, Banner } from '../ui';
 
 export type NightScreenState = 'dead' | 'sleeping' | 'acting';
 
@@ -62,19 +63,17 @@ function NightScreen() {
 
   if (screenState === 'dead') {
     return (
-      <div className="mafia-screen">
-        <h1>{uz.night.watchingTitle}</h1>
-        <p className="mafia-hint">{uz.night.watchingNote}</p>
-      </div>
+      <Screen theme="night" title={uz.night.watchingTitle}>
+        <p className="rm-hint">{uz.night.watchingNote}</p>
+      </Screen>
     );
   }
 
   if (screenState === 'sleeping') {
     return (
-      <div className="mafia-screen">
-        <h1>{uz.night.sleepingTitle}</h1>
-        <p className="mafia-hint">{uz.night.sleepingNote}</p>
-      </div>
+      <Screen theme="night" title={uz.night.sleepingTitle}>
+        <p className="rm-hint">{uz.night.sleepingNote}</p>
+      </Screen>
     );
   }
 
@@ -113,69 +112,60 @@ function NightScreen() {
     }
   };
 
+  const footer =
+    roomCode && roster && myPlayerId ? (
+      <Button disabled={!canConfirmSelection(ability, selected)} loading={submitting} onClick={() => void handleConfirm()}>
+        {mySubmittedAction ? uz.night.resubmitButton : uz.night.confirmButton}
+      </Button>
+    ) : undefined;
+
   return (
-    <div className="mafia-screen">
-      <h1>{uz.night.title}</h1>
-      <div className="mafia-card">
+    <Screen theme="night" title={uz.night.title} footer={footer}>
+      <Card>
         <p style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>{info.name}</p>
-        <p className="mafia-hint" style={{ margin: 0 }}>
-          {info.ability}
-        </p>
+        <p className="rm-hint">{info.ability}</p>
 
         {teammates.length > 0 && (
-          <div className="mafia-row" style={{ flexWrap: 'wrap' }}>
+          <div className="rm-row" style={{ flexWrap: 'wrap' }}>
             {teammates.map((teammate) => (
-              <span key={teammate.playerId} className="mafia-badge">
-                {roleInfo(teammate.roleCode).name}
-              </span>
+              <Badge key={teammate.playerId}>{roleInfo(teammate.roleCode).name}</Badge>
             ))}
           </div>
         )}
-      </div>
+      </Card>
 
-      {!roomCode && <p className="mafia-banner mafia-banner--error">{uz.night.rosterUnavailable}</p>}
+      {!roomCode && <Banner variant="error">{uz.night.rosterUnavailable}</Banner>}
 
-      {roomCode && rosterLoading && !roster && <p className="mafia-hint">{uz.night.rosterLoading}</p>}
+      {roomCode && rosterLoading && !roster && <p className="rm-hint">{uz.night.rosterLoading}</p>}
 
-      {roomCode && rosterError && !roster && <p className="mafia-banner mafia-banner--error">{uz.night.rosterError}</p>}
+      {roomCode && rosterError && !roster && <Banner variant="error">{uz.night.rosterError}</Banner>}
 
       {roomCode && roster && myPlayerId && (
-        <div className="mafia-card">
+        <Card>
           <p style={{ fontWeight: 600, margin: 0 }}>{uz.night.targetsTitle}</p>
-          {ability.pairTarget && <p className="mafia-hint" style={{ margin: 0 }}>{uz.night.pairTargetHint}</p>}
+          {ability.pairTarget && <p className="rm-hint">{uz.night.pairTargetHint}</p>}
 
           {buildTargetRows(ability, myPlayerId, roster, teammates).map((row) => {
             const isSelected = selected.includes(row.playerId);
             return (
-              <button
+              <Chip
                 key={row.playerId}
-                type="button"
-                className={`mafia-button ${isSelected ? '' : 'mafia-button--secondary'}`}
+                selected={isSelected}
                 disabled={!row.eligible || submitting}
                 onClick={() => toggleSelect(row.playerId, row.eligible)}
               >
                 {row.displayName}
                 {row.isSelf && ` ${uz.night.youMarker}`}
                 {!row.eligible && row.reason && ` — ${REASON_LABEL[row.reason]}`}
-              </button>
+              </Chip>
             );
           })}
-        </div>
+        </Card>
       )}
 
-      {submitError && <p className="mafia-banner mafia-banner--error">{submitError}</p>}
-      {mySubmittedAction && !submitError && <p className="mafia-hint">{uz.night.submitted}</p>}
-
-      {roomCode && roster && myPlayerId && (
-        <button
-          className="mafia-button"
-          disabled={!canConfirmSelection(ability, selected) || submitting}
-          onClick={() => void handleConfirm()}
-        >
-          {submitting ? uz.night.submitting : mySubmittedAction ? uz.night.resubmitButton : uz.night.confirmButton}
-        </button>
-      )}
-    </div>
+      {submitError && <Banner variant="error">{submitError}</Banner>}
+      {mySubmittedAction && !submitError && <p className="rm-hint">{uz.night.submitted}</p>}
+    </Screen>
   );
 }
 
