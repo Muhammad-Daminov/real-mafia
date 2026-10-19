@@ -1445,6 +1445,56 @@ already-shipped precedents (B-R1's `isReady`/`isHost`, B-R3's
 `lifeStatus`) — a projection-only read benefits from a write-time column,
 not a read-time replay.
 
+### OD-062 — Minimal `/start` Webhook Omits Deep-Link/Referral Payload Handling and a Persisted `telegram_updates` Table · OPEN (not blocking — stated default in force)
+Context: B-T2's own task instruction scoped this slice explicitly:
+"minimal Telegram bot /start handler via webhook. Scope is ONLY this. No
+other bot commands," and spelled out an in-memory, bounded (last 1000)
+`update_id` dedupe rather than a persisted table. This is narrower than
+what MASTER_TZ.md actually specifies for the bot's command surface and
+webhook dedup:
+
+- §637-642: `/start` MUST "resolve and offer to open the Mini App
+  directly into that room" for a `?start=room_<code>` deep link, and
+  `/start ref_<code>` MUST "register user **and** record the referral
+  edge (§26.2) before any other processing." `TelegramWebhookService`
+  (`src/telegram/telegram-webhook.service.ts`) parses none of this — any
+  `/start <payload>` gets the exact same generic greeting + `web_app`
+  button as a bare `/start`, the payload itself read by nothing.
+- §28.1/§39.1 (v5.0, referenced by v6 at lines 869/881/1223): webhook
+  update dedup is specified as a persisted `telegram_updates` table,
+  shared by every webhook type (bot commands, Stars payments alike) — "the
+  same `telegram_updates` dedup table as any other Telegram update." No
+  such table exists in `prisma/schema.prisma`; this slice's dedupe is a
+  single in-memory `Set`/array in `TelegramWebhookService`, lost on every
+  restart and never shared across more than one process.
+
+**Decision: ship the minimal slice as instructed, log the gap, do not
+build the rest here.** Building `?start=room_<code>`/`ref_<code>`
+handling needs `RoomsModule`/`AuthModule` wiring (resolving a room code to
+a Mini App deep link, and the referral-edge write §26.2 describes) that
+is explicitly out of this slice's "no other bot commands" scope. Building
+a persisted `telegram_updates` table needs a migration (`CLAUDE.md`:
+migrations only, never `db push`) that this slice's instructions never
+asked for, and extends a dedup mechanism §637-642's own payment-webhook
+section says should eventually also cover `pre_checkout_query`/
+`successful_payment` — better designed once, for every webhook type, in
+the slice that actually builds Stars payments (§25), not bolted onto
+`/start` alone here.
+
+**Proposed minimal additions (not implemented — out of this slice's
+scope).** (1) A `telegram_updates(update_id BIGINT PRIMARY KEY, received_at
+TIMESTAMPTZ)` table (or similar), written transactionally before an
+update is processed — `INSERT ... ON CONFLICT DO NOTHING`, 0 rows
+affected treated as the duplicate-no-op per the same §25.4/§28.1
+tolerance principle payments already use — replacing
+`TelegramWebhookService`'s in-memory `Set`. (2) A payload parser for
+`message.text` beyond the bare `/start` match already in
+`isStartCommand`, dispatching `room_<code>` to a room-lookup (mirroring
+`RoomsService.getRoomByCode`) and `ref_<code>` to a referral-edge insert
+(§26.2, once `referral` exists) — both additive to
+`TelegramWebhookService.handleUpdate`'s existing `/start`-match branch,
+not a redesign of it.
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
 None. Every previously blocking decision is resolved (see the addendum above).
@@ -1464,6 +1514,7 @@ None. Every previously blocking decision is resolved (see the addendum above).
 | OD-033 | Financial-record retention jurisdiction | Release gate | — |
 | OD-034 | Wallet negative-balance handling after refund | Phase: Payments | Clamp display at 0, flag ledger deficit for admin review (§25.5) |
 | OD-061 | `diedInRound`/`deathCause` on `GamePlayer` | Any slice needing them server-side | Not built — frontend's roster-diff workaround (OD-F5-001) stands in |
+| OD-062 | `/start` deep-link/referral payload + persisted `telegram_updates` table | Phase 20/26 (deep links) / Phase 25 (Stars webhooks) | Not built — generic greeting for any `/start <payload>`; in-memory bounded dedupe stands in |
 
 ## Notes
 
@@ -1476,4 +1527,4 @@ None. Every previously blocking decision is resolved (see the addendum above).
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
 - Total: 50 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
   OD-037 through OD-060 recorded 2026-09-26/27/28/2026-10-05/2026-10-17), 0 open+blocking,
-  11 open+non-blocking (61 IDs, OD-001 through OD-061).
+  12 open+non-blocking (62 IDs, OD-001 through OD-062).
