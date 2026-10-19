@@ -1,0 +1,46 @@
+/**
+ * F7b: the alive/dead roster scrolls inside its own fixed-height
+ * container (task item 8: "roster scrolls inside its own container, no
+ * horizontal scroll") rather than growing the whole page — a vertical
+ * scrollbar only, never horizontal.
+ */
+.rm-day__roster {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rm-space-1);
+  max-height: 260px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/**
+ * F7b: the vote-result card's "dramatic but short" emphasis (task item
+ * 4) — a 2.6s glow pulse that settles back to the card's normal shadow,
+ * never gating anything else on screen. Disabled entirely under
+ * `prefers-reduced-motion` rather than just shortened, since a pulsing
+ * glow is exactly the kind of motion that preference exists to suppress.
+ */
+.rm-announce--pulse {
+  animation: rm-announce-pulse 2.6s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rm-announce--pulse {
+    animation: none;
+  }
+}
+
+@keyframes rm-announce-pulse {
+  0% {
+    transform: scale(0.97);
+    box-shadow: 0 0 0 0 var(--rm-accent-strong);
+  }
+  15% {
+    transform: scale(1.02);
+    box-shadow: 0 0 32px 4px var(--rm-accent-strong);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: var(--rm-shadow-raised);
+  }
+}
