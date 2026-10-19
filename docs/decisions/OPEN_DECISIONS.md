@@ -1495,6 +1495,13 @@ tolerance principle payments already use — replacing
 `TelegramWebhookService.handleUpdate`'s existing `/start`-match branch,
 not a redesign of it.
 
+### OD-063 — B-H1 Hardens `REDIS_URL` to Required-at-Boot, Stricter Than the Spec's Own Fallback Design · OPEN (not blocking — stated default in force)
+Context: B-H1's own task instruction lists `REDIS_URL` under "required always" for the new boot-time env validator (`src/common/config/env-validation.ts`) — the process now refuses to start at all if it's unset, in every environment. This is stricter than what `TelegramReplayGuardService` (`src/auth/telegram-replay-guard.service.ts`) was explicitly designed for: "Storage follows the spec's Redis-primary/PostgreSQL-fallback pattern (§34) ... a Redis outage degrades to a PostgreSQL unique insert rather than disabling the guard" — that service's own fallback code is untouched and still works exactly as before if Redis becomes unreachable *after* boot; this OD is only about whether the app is allowed to boot at all with `REDIS_URL` unset *at boot time*.
+
+**Decision: ship the stricter boot-time requirement as instructed, log the behavior change.** The fallback path (`this.redis === null`, PostgreSQL-only mode) still exists in the code and is still exercised by `telegram-replay-guard.service.spec.ts`'s own tests for a *runtime* Redis outage — it simply can no longer be reached by *never configuring* `REDIS_URL` in the first place, since `main.ts`'s `validateEnvOrExit()` now refuses to boot before any service is even instantiated. A deployment that previously ran happily with `REDIS_URL` unset (accepting the slower Postgres-only path permanently, by omission rather than by choice) must now set it explicitly.
+
+**Why this is the right default for a pre-launch hardening slice, not an accidental behavior change to quietly swallow:** an *unset* `REDIS_URL` in a real deployment is far more likely to be a forgotten env var than a deliberate "we chose Postgres-only forever" decision — forcing it to be explicit (or the boot to fail loudly) is exactly the "fail fast with a clear message" principle this slice's other env-validation rules already apply to `DATABASE_URL`/`BOT_TOKEN`/`JWT_SECRET`. Local dev/test is unaffected in practice: `src/common/config/env-validation.ts` is only ever invoked from `main.ts`'s `bootstrap()`, which the full test suite never calls (confirmed: no `*.spec.ts` imports `bootstrap()` — `src/main.spec.ts` imports the extracted `configureApp`/`validateEnvOrExit` exports directly, never the auto-run `bootstrap()` itself), so this has zero effect on `pnpm test`.
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
 None. Every previously blocking decision is resolved (see the addendum above).
@@ -1515,6 +1522,7 @@ None. Every previously blocking decision is resolved (see the addendum above).
 | OD-034 | Wallet negative-balance handling after refund | Phase: Payments | Clamp display at 0, flag ledger deficit for admin review (§25.5) |
 | OD-061 | `diedInRound`/`deathCause` on `GamePlayer` | Any slice needing them server-side | Not built — frontend's roster-diff workaround (OD-F5-001) stands in |
 | OD-062 | `/start` deep-link/referral payload + persisted `telegram_updates` table | Phase 20/26 (deep links) / Phase 25 (Stars webhooks) | Not built — generic greeting for any `/start <payload>`; in-memory bounded dedupe stands in |
+| OD-063 | `REDIS_URL` required at boot (B-H1) | Any deployment | Required always — Postgres fallback stays runtime-only, not a "never configure Redis" option |
 
 ## Notes
 
@@ -1527,4 +1535,4 @@ None. Every previously blocking decision is resolved (see the addendum above).
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
 - Total: 50 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
   OD-037 through OD-060 recorded 2026-09-26/27/28/2026-10-05/2026-10-17), 0 open+blocking,
-  12 open+non-blocking (62 IDs, OD-001 through OD-062).
+  13 open+non-blocking (63 IDs, OD-001 through OD-063).

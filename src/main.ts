@@ -1,10 +1,34 @@
-import { ValidationPipe } from '@nestjs/common';
+import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { httpCorsOptions } from './common/config/cors';
+import { formatEnvIssues, validateEnv } from './common/config/env-validation';
+
+/**
+ * B-H1: runs before `AppModule` is ever instantiated — a bad/missing
+ * `DATABASE_URL` or a too-short `JWT_SECRET` fails here instead of
+ * surfacing as a confusing downstream connection error or a silently weak
+ * token later. Never logs a value, only variable names (see
+ * `env-validation.ts`'s own docstring).
+ */
+function validateEnvOrExit(): void {
+  const logger = new Logger('Bootstrap');
+  const { errors, warnings } = validateEnv(process.env);
+
+  if (warnings.length > 0) {
+    logger.warn(`Environment warnings (app will still start):\n${formatEnvIssues(warnings)}`);
+  }
+
+  if (errors.length > 0) {
+    logger.error(`Refusing to start — invalid environment configuration:\n${formatEnvIssues(errors)}`);
+    process.exit(1);
+  }
+}
 
 async function bootstrap() {
+  validateEnvOrExit();
+
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
   // Mini App frontend origin allow-list (common/config/cors.ts) — the same
