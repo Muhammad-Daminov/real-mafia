@@ -178,4 +178,58 @@ describe('RealtimeGateway (integration)', () => {
     socketA.disconnect();
     socketB.disconnect();
   });
+
+  describe('B-H1: per-user concurrent connection cap', () => {
+    const originalCap = process.env.SOCKET_MAX_CONNECTIONS_PER_USER;
+
+    afterEach(() => {
+      if (originalCap === undefined) {
+        delete process.env.SOCKET_MAX_CONNECTIONS_PER_USER;
+      } else {
+        process.env.SOCKET_MAX_CONNECTIONS_PER_USER = originalCap;
+      }
+    });
+
+    it('rejects a connection once the user is already at the cap, but a later connection succeeds once one disconnects (reconnect is not broken)', async () => {
+      process.env.SOCKET_MAX_CONNECTIONS_PER_USER = '2';
+      const user = await makeUser();
+      const { game } = await makeGameWithPlayer(user.id);
+      const auth = { token: token(user.id, user.telegramId), gameId: game.id };
+
+      const socket1 = await connect(auth);
+      const socket2 = await connect(auth);
+      expect(socket1.connected).toBe(true);
+      expect(socket2.connected).toBe(true);
+
+      await expect(connect(auth)).rejects.toBeDefined(); // 3rd connection, over the cap of 2
+
+      socket1.disconnect();
+      await new Promise((resolve) => setTimeout(resolve, 100)); // let the server process the disconnect
+
+      const socket3 = await connect(auth); // a slot freed up — this must succeed
+      expect(socket3.connected).toBe(true);
+
+      socket2.disconnect();
+      socket3.disconnect();
+    });
+
+    it("does not consume a slot for a connection that fails auth after the cap check (e.g. no GamePlayer row)", async () => {
+      process.env.SOCKET_MAX_CONNECTIONS_PER_USER = '1';
+      const user = await makeUser();
+      const other = await makeUser();
+      const { game: otherGame } = await makeGameWithPlayer(other.id); // `user` has no row here
+      const { game: ownGame } = await makeGameWithPlayer(user.id);
+
+      await expect(
+        connect({ token: token(user.id, user.telegramId), gameId: otherGame.id }),
+      ).rejects.toBeDefined();
+
+      // The failed attempt above must not have permanently consumed the
+      // (cap of 1) slot — a legitimate connection still succeeds.
+      const socket = await connect({ token: token(user.id, user.telegramId), gameId: ownGame.id });
+      expect(socket.connected).toBe(true);
+
+      socket.disconnect();
+    });
+  });
 });

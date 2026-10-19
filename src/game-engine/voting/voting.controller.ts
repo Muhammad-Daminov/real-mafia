@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { JwtGuard } from '../../auth/guards/jwt.guard';
+import { UserThrottlerGuard } from '../../common/guards/user-throttler.guard';
 import type { RequestWithUser } from '../../auth/types/authenticated-user';
 import { VoteService } from './vote.service';
 import { CastVoteDto } from './dto/cast-vote.dto';
@@ -8,9 +9,10 @@ import { CastVoteDto } from './dto/cast-vote.dto';
  * §16/OD-018/OD-020, mirrors §30.2 chat's `/games/:gameId/...` shape. Unlike
  * night-actions' `mine`-scoped read, this game's tally read is
  * OD-020(a)-public — every current-round vote, not just the caller's own.
+ * B-H1: `UserThrottlerGuard` after `JwtGuard` — moderate per-user rate limit.
  */
 @Controller('games/:gameId/votes')
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, UserThrottlerGuard)
 export class VotingController {
   constructor(private readonly voteService: VoteService) {}
 

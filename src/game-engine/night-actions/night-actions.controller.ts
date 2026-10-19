@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { JwtGuard } from '../../auth/guards/jwt.guard';
+import { UserThrottlerGuard } from '../../common/guards/user-throttler.guard';
 import type { RequestWithUser } from '../../auth/types/authenticated-user';
 import { NightActionService } from './night-action.service';
 import { SubmitNightActionDto } from './dto/submit-night-action.dto';
@@ -7,10 +8,11 @@ import { SubmitNightActionDto } from './dto/submit-night-action.dto';
 /**
  * §17.1-§17.3, mirrors §30.2 chat's `/games/:gameId/...` shape. `GET .../mine`
  * is scoped to the requesting player's own submissions only (§12.7's role
- * privacy rule — never another player's action or its result).
+ * privacy rule — never another player's action or its result). B-H1:
+ * `UserThrottlerGuard` after `JwtGuard` — moderate per-user rate limit.
  */
 @Controller('games/:gameId/night-actions')
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, UserThrottlerGuard)
 export class NightActionsController {
   constructor(private readonly nightActionService: NightActionService) {}
 

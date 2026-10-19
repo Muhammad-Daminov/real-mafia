@@ -1,7 +1,10 @@
 import { Module } from '@nestjs/common';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { SchedulingModule } from '../common/scheduling/scheduling.module';
 import { RealtimeModule } from '../common/realtime/realtime.module';
 import { CommandRequestService } from '../common/command-requests/command-request.service';
+import { commandThrottlerOptions } from '../common/config/throttler';
+import { UserThrottlerGuard } from '../common/guards/user-throttler.guard';
 import { RoleAssignmentService } from './role-assignment.service';
 import { GameLifecycleService } from './game-lifecycle.service';
 import { PhaseTransitionService } from './phase-transition.service';
@@ -57,7 +60,9 @@ import { VotingController } from './voting/voting.controller';
  * referral-granted entity may ever affect a game's outcome.
  */
 @Module({
-  imports: [SchedulingModule, RealtimeModule],
+  // B-H1: `ThrottlerModule.forRoot` — same per-module registration
+  // `RoomsModule` uses for the same `UserThrottlerGuard`/limit.
+  imports: [SchedulingModule, RealtimeModule, ThrottlerModule.forRoot(commandThrottlerOptions())],
   controllers: [NightActionsController, VotingController],
   providers: [
     RoleAssignmentService,
@@ -67,6 +72,7 @@ import { VotingController } from './voting/voting.controller';
     NightResolutionService,
     VoteService,
     VoteResolutionService,
+    UserThrottlerGuard,
     CommandRequestService,
   ],
   // B-D2: `NightActionService`/`VoteService` exported so `dev-tools/`'s

@@ -9,6 +9,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { JwtGuard } from '../auth/guards/jwt.guard';
+import { UserThrottlerGuard } from '../common/guards/user-throttler.guard';
 import type { RequestWithUser } from '../auth/types/authenticated-user';
 import { RoomsService } from './rooms.service';
 import { CreateRoomDto } from './dto/create-room.dto';
@@ -19,9 +20,14 @@ import { SetReadyDto } from './dto/set-ready.dto';
 import { TransferHostDto } from './dto/transfer-host.dto';
 import { StartGameDto } from './dto/start-game.dto';
 
-/** Master TZ §30.1/OD-037: all endpoints are `bearer` — authenticated only. */
+/**
+ * Master TZ §30.1/OD-037: all endpoints are `bearer` — authenticated only.
+ * B-H1: `UserThrottlerGuard` after `JwtGuard` (order matters — it reads
+ * `req.user`, which only exists once `JwtGuard` has already run) applies
+ * the moderate per-user command-endpoint rate limit to every route here.
+ */
 @Controller('rooms')
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, UserThrottlerGuard)
 export class RoomsController {
   constructor(private readonly roomsService: RoomsService) {}
 

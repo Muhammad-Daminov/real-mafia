@@ -1,9 +1,18 @@
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { httpCorsOptions } from './common/config/cors';
 import { formatEnvIssues, validateEnv } from './common/config/env-validation';
+
+/** B-H1: JSON/urlencoded body cap (task: "e.g. 100kb") — set explicitly via
+ * `useBodyParser` rather than relying on body-parser's own default (which
+ * happens to already be 100kb, but an implicit default isn't a documented
+ * intentional limit). `NestFactory.create`'s own automatic parser
+ * registration is turned off below (`bodyParser: false`) so this is the
+ * only JSON parser in the chain, not a second one stacked on top of it. */
+export const JSON_BODY_LIMIT = '100kb';
 
 /**
  * B-H1: runs before `AppModule` is ever instantiated — a bad/missing
@@ -26,10 +35,37 @@ function validateEnvOrExit(): void {
   }
 }
 
-async function bootstrap() {
-  validateEnvOrExit();
+/**
+ * B-H1: every process-wide middleware/pipe/header concern this slice adds
+ * or confirms, extracted out of `bootstrap()` so it's callable (and its
+ * effects on a live app testable via supertest) without also binding a
+ * real port — `bootstrap()` below is the one real caller, a test is the
+ * other. Does NOT call `app.listen()` — that stays the caller's job.
+ */
+export function configureApp(app: NestExpressApplication): void {
+  app.useBodyParser('json', { limit: JSON_BODY_LIMIT });
+  app.useBodyParser('urlencoded', { extended: true, limit: JSON_BODY_LIMIT });
 
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // B-H1: security headers. `contentSecurityPolicy`/`crossOriginResourcePolicy`
+  // are explicitly relaxed — this process serves a pure JSON API (and
+  // Socket.IO's own polling/upgrade handshake) to a cross-origin Mini App
+  // frontend, never HTML, so Helmet's HTML-oriented CSP defaults have
+  // nothing to protect and `crossOriginResourcePolicy: 'same-origin'`
+  // (Helmet's own default) would otherwise risk a browser blocking the
+  // frontend's own cross-origin fetches. HSTS stays at Helmet's default
+  // (enabled, `preload` false) — "do not enable HSTS preload" is this
+  // slice's own explicit instruction, satisfied by never passing
+  // `preload: true`, not by disabling HSTS outright.
+  app.use(
+    helmet({
+      contentSecurityPolicy: false,
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+    }),
+  );
+  // Helmet's own `hidePoweredBy` middleware already strips this; disabling
+  // it at the Express `Settings` level too is the belt-and-suspenders,
+  // dependency-independent way to satisfy "disable x-powered-by" literally.
+  app.disable('x-powered-by');
 
   // Mini App frontend origin allow-list (common/config/cors.ts) — the same
   // list the /game Socket.IO gateway's own `cors` option reads, so HTTP and
@@ -54,6 +90,18 @@ async function bootstrap() {
       transform: true,
     }),
   );
+}
+
+async function bootstrap() {
+  validateEnvOrExit();
+
+  // `bodyParser: false` — this app registers its own (`useBodyParser`,
+  // inside `configureApp`, with an explicit size limit) instead of Nest's
+  // automatic unlimited-by-default-options one, so there is exactly one
+  // JSON parser in the middleware chain, not two stacked on each other.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bodyParser: false });
+
+  configureApp(app);
 
   // Render (and most PaaS containers) only route traffic to a process
   // listening on all interfaces — binding to the implicit default (which
@@ -63,4 +111,11 @@ async function bootstrap() {
   await app.listen(process.env.PORT ?? 3000, '0.0.0.0');
 }
 
-bootstrap();
+// `require.main === module` — only auto-run when this file is the actual
+// process entry point (`node dist/src/main`, `nest start`), never when a
+// test (or anything else) imports `configureApp`/`JSON_BODY_LIMIT` from it,
+// which would otherwise try to boot a second real app and bind a second
+// real port as a side effect of that import.
+if (require.main === module) {
+  bootstrap();
+}
