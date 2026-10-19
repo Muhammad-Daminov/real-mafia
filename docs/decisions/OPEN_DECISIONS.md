@@ -1502,6 +1502,13 @@ Context: B-H1's own task instruction lists `REDIS_URL` under "required always" f
 
 **Why this is the right default for a pre-launch hardening slice, not an accidental behavior change to quietly swallow:** an *unset* `REDIS_URL` in a real deployment is far more likely to be a forgotten env var than a deliberate "we chose Postgres-only forever" decision — forcing it to be explicit (or the boot to fail loudly) is exactly the "fail fast with a clear message" principle this slice's other env-validation rules already apply to `DATABASE_URL`/`BOT_TOKEN`/`JWT_SECRET`. Local dev/test is unaffected in practice: `src/common/config/env-validation.ts` is only ever invoked from `main.ts`'s own `validateEnvOrExit`, called from `bootstrap()`, which the full test suite never calls (confirmed: `src/main.spec.ts` imports only the extracted, side-effect-free `configureApp`/`JSON_BODY_LIMIT` exports; `bootstrap()` itself only auto-runs behind a `require.main === module` guard, never as an import side effect), so this has zero effect on `pnpm test`.
 
+### OD-064 — Rate Limiting and the Socket Connection Cap Are In-Memory, Single-Instance Only · OPEN (not blocking — stated default in force)
+Context: B-H1 adds two new throttling mechanisms — the `@nestjs/throttler` guards on `POST /auth/telegram` and the command endpoints (rooms/night-actions/votes), plus `RealtimeGateway`'s per-user concurrent Socket.IO connection cap. The task instruction explicitly calls out that "in-memory is acceptable for a single instance" and asks for the limitation to be noted as an OD rather than silently shipped.
+
+**Decision: ship in-memory storage for both, as instructed.** `@nestjs/throttler`'s default `ThrottlerStorageService` keeps per-key hit counts in process memory; `RealtimeGateway`'s `connectionsByUser` map is a plain in-process `Map`. Neither is shared across replicas. With a single running instance (the project's current deployment shape — see OD-012's `PROCESS_ROLE` split, which only separates the scheduler worker loop from the API, not the API itself into multiple replicas) this is exactly as effective as a shared store would be. The moment the HTTP API or the `/game` gateway runs as more than one instance, both limits become per-instance rather than global: a client could get up to `N × instance count` requests/connections by landing on different instances, and a user's socket-count enforcement would miss connections on other instances entirely.
+
+**Why this is an acceptable default for now, and what would need to change later:** horizontal scaling of the API process isn't built or decided yet (OD-012 is itself open/non-blocking), so there is no current deployment shape where this gap is actually reachable. If/when the API scales beyond one instance, the fix is a shared backing store — `@nestjs/throttler` supports a Redis storage adapter as a drop-in replacement for `ThrottlerStorageService`, and the socket cap would need to move its count into Redis (the same instance already required at boot per OD-063) keyed by user id, incrementing/decrementing on connect/disconnect. Neither change is needed while OD-012 remains unresolved in the single-instance direction.
+
 ## OPEN and BLOCKING — implementation of the dependent feature MUST NOT proceed
 
 None. Every previously blocking decision is resolved (see the addendum above).
@@ -1523,6 +1530,7 @@ None. Every previously blocking decision is resolved (see the addendum above).
 | OD-061 | `diedInRound`/`deathCause` on `GamePlayer` | Any slice needing them server-side | Not built — frontend's roster-diff workaround (OD-F5-001) stands in |
 | OD-062 | `/start` deep-link/referral payload + persisted `telegram_updates` table | Phase 20/26 (deep links) / Phase 25 (Stars webhooks) | Not built — generic greeting for any `/start <payload>`; in-memory bounded dedupe stands in |
 | OD-063 | `REDIS_URL` required at boot (B-H1) | Any deployment | Required always — Postgres fallback stays runtime-only, not a "never configure Redis" option |
+| OD-064 | Rate limiting / socket cap storage (B-H1) | Horizontal scaling of the API process (OD-012) | In-memory, single-instance only |
 
 ## Notes
 
@@ -1535,4 +1543,4 @@ None. Every previously blocking decision is resolved (see the addendum above).
   stated default already reflected in the spec body (§12.4, §25.5, §28.4).
 - Total: 50 resolved (17 in v6.0 + 9 by the 2026-09-25 addendum +
   OD-037 through OD-060 recorded 2026-09-26/27/28/2026-10-05/2026-10-17), 0 open+blocking,
-  13 open+non-blocking (63 IDs, OD-001 through OD-063).
+  14 open+non-blocking (64 IDs, OD-001 through OD-064).
