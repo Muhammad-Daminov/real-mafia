@@ -6,3 +6,5 @@ export { Chip, type ChipProps } from './Chip';
 export { Banner, type BannerProps, type BannerVariant } from './Banner';
 export { Screen, type ScreenProps, type ScreenTheme } from './Screen';
 export { Spinner, type SpinnerProps } from './Spinner';
+export { InGameShell, type InGameShellProps } from './InGameShell';
+export { PlayerTile, type PlayerTileProps, type PlayerTileLayout } from './PlayerTile';

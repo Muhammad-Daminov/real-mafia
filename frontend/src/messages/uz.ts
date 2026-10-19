@@ -121,6 +121,7 @@ export const uz = {
     round: (round: number) => `${round}-tur`,
     noDeadline: '—',
     stateError: 'O‘yin holatini yuklashda xatolik',
+    aliveCount: (alive: number, total: number) => `${alive}/${total} tirik`,
   },
   night: {
     title: 'Tun',

@@ -18,3 +18,14 @@
 .rm-row > * {
   flex: 1;
 }
+
+/** F7b: the Night/Vote target-tile grid — shared layout for both pickers
+ * (`PlayerTile`'s `grid` layout is the tile itself; this is just the
+ * container). `auto-fill`/`minmax` keeps tiles a comfortable >=44px tap
+ * target down to 360px width without a fixed column count that would
+ * either crowd a small roster or stretch a large one. */
+.rm-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: var(--rm-space-2);
+}

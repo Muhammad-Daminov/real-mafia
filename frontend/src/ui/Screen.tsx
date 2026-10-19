@@ -1,11 +1,12 @@
 import type { ReactNode } from 'react';
 import './Screen.css';
 
-export type ScreenTheme = 'neutral' | 'night' | 'day';
+export type ScreenTheme = 'neutral' | 'night' | 'day' | 'vote';
 
 export interface ScreenProps {
   /** `data-theme` — `styles/tokens.css`'s phase-theme override block.
-   * `neutral` (the default) covers Home/Lobby/RoleReveal/GameEnd. */
+   * `neutral` (the default) covers Home/Lobby/RoleReveal/GameEnd. `vote`
+   * (F7b) is `DayScreen`'s own VOTING sub-phase, not a separate screen. */
   theme?: ScreenTheme;
   title?: ReactNode;
   children: ReactNode;

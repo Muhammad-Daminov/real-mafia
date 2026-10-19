@@ -1,0 +1,80 @@
+.rm-shell__topbar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rm-space-2);
+  padding-bottom: var(--rm-space-3);
+  border-bottom: 1px solid var(--rm-border);
+}
+
+.rm-shell__phase-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--rm-space-2);
+}
+
+.rm-shell__phase-name {
+  font: var(--rm-title-weight) 22px/var(--rm-title-line) var(--rm-font-family);
+}
+
+.rm-shell__round {
+  color: var(--rm-text-2);
+  font-size: var(--rm-caption-size);
+  white-space: nowrap;
+}
+
+.rm-shell__meta-row {
+  display: flex;
+  align-items: center;
+  gap: var(--rm-space-2);
+  flex-wrap: wrap;
+}
+
+.rm-shell__ring {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+}
+
+.rm-shell__ring svg {
+  transform: rotate(-90deg);
+}
+
+.rm-shell__ring-track {
+  fill: none;
+  stroke: var(--rm-border-strong);
+  stroke-width: 3;
+}
+
+.rm-shell__ring-fill {
+  fill: none;
+  stroke: var(--rm-accent-strong);
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dashoffset var(--rm-duration-base) linear;
+}
+
+.rm-shell__ring-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--rm-text-1);
+}
+
+.rm-shell__fade {
+  animation: rm-shell-fade var(--rm-duration-phase) var(--rm-ease) both;
+}
+
+@keyframes rm-shell-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

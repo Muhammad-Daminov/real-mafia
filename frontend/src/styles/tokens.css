@@ -82,6 +82,8 @@
   --rm-duration-fast: 150ms;
   --rm-duration-base: 220ms;
   --rm-duration-reveal: 520ms;
+  /* F7b: InGameShell's phase crossfade — task's own literal number. */
+  --rm-duration-phase: 300ms;
   --rm-ease: cubic-bezier(0.22, 1, 0.36, 1);
 
   /* Safe area — Telegram's own viewport inset vars win when bound
@@ -117,10 +119,24 @@
   --rm-theme-glow: rgba(217, 142, 43, 0.14);
 }
 
+/* F7b: VOTING specifically (`DayScreen.tsx`, a day sub-phase) — a tenser
+ * red-amber than plain `day`, distinct enough to register as "this one
+ * matters more" without introducing a 4th full palette. */
+[data-theme='vote'] {
+  --rm-bg: #150c0a;
+  --rm-surface-1: #22120e;
+  --rm-surface-2: #2c1712;
+  --rm-surface-raised: #381d16;
+  --rm-accent: #d9552b;
+  --rm-accent-strong: #f0703c;
+  --rm-theme-glow: rgba(217, 85, 43, 0.16);
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root {
     --rm-duration-fast: 0ms;
     --rm-duration-base: 0ms;
     --rm-duration-reveal: 0ms;
+    --rm-duration-phase: 0ms;
   }
 }
